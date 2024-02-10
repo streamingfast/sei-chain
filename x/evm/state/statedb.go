@@ -3,6 +3,7 @@ package state
 import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/sei-protocol/sei-chain/utils"
@@ -30,6 +31,8 @@ type DBImpl struct {
 
 	k          EVMKeeper
 	simulation bool
+
+	logger state.StateLogger
 }
 
 func NewDBImpl(ctx sdk.Context, k EVMKeeper, simulation bool) *DBImpl {
@@ -44,6 +47,10 @@ func NewDBImpl(ctx sdk.Context, k EVMKeeper, simulation bool) *DBImpl {
 	}
 	s.Snapshot() // take an initial snapshot for GetCommitted
 	return s
+}
+
+func (s *DBImpl) SetLogger(logger state.StateLogger) {
+	s.logger = logger
 }
 
 func (s *DBImpl) SetEVM(evm *vm.EVM) {
@@ -88,7 +95,7 @@ func (s *DBImpl) GetStorageRoot(common.Address) common.Hash {
 	panic("GetStorageRoot is not implemented and called unexpectedly")
 }
 
-func (s *DBImpl) Copy() vm.StateDB {
+func (s *DBImpl) Copy() interface{} {
 	newCtx := s.ctx.WithMultiStore(s.ctx.MultiStore().CacheMultiStore())
 	return &DBImpl{
 		ctx:              newCtx,
@@ -100,6 +107,7 @@ func (s *DBImpl) Copy() vm.StateDB {
 		coinbaseAddress:  s.coinbaseAddress,
 		simulation:       s.simulation,
 		err:              s.err,
+		logger:           s.logger,
 	}
 }
 
