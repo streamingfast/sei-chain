@@ -38,12 +38,11 @@ func TransactionDependencyGenerator(_ aclkeeper.Keeper, evmKeeper evmkeeper.Keep
 		return []sdkacltypes.AccessOperation{*acltypes.CommitAccessOp()}, nil
 	}
 
-	if err := ante.Preprocess(ctx, evmMsg, evmKeeper.GetParams(ctx)); err != nil {
+	if err := ante.Preprocess(ctx, evmMsg); err != nil {
 		return []sdkacltypes.AccessOperation{}, err
 	}
 	ops := []sdkacltypes.AccessOperation{}
-	ops = appendRWBalanceOps(ops, state.GetMiddleManAddress(ctx))
-	ops = appendRWBalanceOps(ops, state.GetCoinbaseAddress(ctx))
+	ops = appendRWBalanceOps(ops, state.GetCoinbaseAddress(ctx.TxIndex()))
 	sender := evmMsg.Derived.SenderSeiAddr
 	ops = appendRWBalanceOps(ops, sender)
 	ops = append(ops,

@@ -18,7 +18,17 @@ func (s *DBImpl) SubBalance(evmAddr common.Address, amt *big.Int, reason state.B
 		return
 	}
 
-	s.send(s.getSeiAddress(evmAddr), s.middleManAddress, amt)
+	usei, wei := SplitUseiWeiAmount(amt)
+	addr := s.getSeiAddress(evmAddr)
+	s.err = s.k.BankKeeper().SubUnlockedCoins(s.ctx, addr, sdk.NewCoins(sdk.NewCoin(s.k.GetBaseDenom(s.ctx), usei)), true)
+	if s.err != nil {
+		return
+	}
+	s.err = s.k.BankKeeper().SubWei(s.ctx, addr, wei)
+	if s.err != nil {
+		return
+	}
+	s.tempStateCurrent.surplus = s.tempStateCurrent.surplus.Add(sdk.NewIntFromBigInt(amt))
 }
 
 func (s *DBImpl) AddBalance(evmAddr common.Address, amt *big.Int, reason state.BalanceChangeReason) {
@@ -30,7 +40,17 @@ func (s *DBImpl) AddBalance(evmAddr common.Address, amt *big.Int, reason state.B
 		return
 	}
 
-	s.send(s.middleManAddress, s.getSeiAddress(evmAddr), amt)
+	usei, wei := SplitUseiWeiAmount(amt)
+	addr := s.getSeiAddress(evmAddr)
+	s.err = s.k.BankKeeper().AddCoins(s.ctx, addr, sdk.NewCoins(sdk.NewCoin(s.k.GetBaseDenom(s.ctx), usei)), true)
+	if s.err != nil {
+		return
+	}
+	s.err = s.k.BankKeeper().AddWei(s.ctx, addr, wei)
+	if s.err != nil {
+		return
+	}
+	s.tempStateCurrent.surplus = s.tempStateCurrent.surplus.Sub(sdk.NewIntFromBigInt(amt))
 }
 
 func (s *DBImpl) GetBalance(evmAddr common.Address) *big.Int {
@@ -51,7 +71,7 @@ func (s *DBImpl) SetBalance(evmAddr common.Address, amt *big.Int, reason state.B
 		panic(s.err)
 	}
 	usei, _ := SplitUseiWeiAmount(amt)
-	coinsAmt := sdk.NewCoins(sdk.NewCoin(s.k.GetBaseDenom(s.ctx), sdk.NewIntFromBigInt(usei).Add(sdk.OneInt())))
+	coinsAmt := sdk.NewCoins(sdk.NewCoin(s.k.GetBaseDenom(s.ctx), usei.Add(sdk.OneInt())))
 	if err := s.k.BankKeeper().MintCoins(s.ctx, types.ModuleName, coinsAmt); err != nil {
 		panic(err)
 	}
@@ -70,5 +90,5 @@ func (s *DBImpl) getSeiAddress(evmAddr common.Address) sdk.AccAddress {
 
 func (s *DBImpl) send(from sdk.AccAddress, to sdk.AccAddress, amt *big.Int) {
 	usei, wei := SplitUseiWeiAmount(amt)
-	s.err = s.k.BankKeeper().SendCoinsAndWei(s.ctx, from, to, nil, s.k.GetBaseDenom(s.ctx), sdk.NewIntFromBigInt(usei), sdk.NewIntFromBigInt(wei))
+	s.err = s.k.BankKeeper().SendCoinsAndWei(s.ctx, from, to, usei, wei)
 }

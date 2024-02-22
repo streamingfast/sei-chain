@@ -100,14 +100,15 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 			ctx.Logger().Error(fmt.Sprintf("failed to write EVM receipt: %s", err))
 			return
 		}
-		err = stateDB.Finalize()
-		if err != nil {
+		surplus, ferr := stateDB.Finalize()
+		if ferr != nil {
+			err = ferr
 			ctx.Logger().Error(fmt.Sprintf("failed to finalize EVM stateDB: %s", err))
 			return
 		}
 		bloom := ethtypes.Bloom{}
 		bloom.SetBytes(receipt.LogsBloom)
-		server.AppendToEvmTxDeferredInfo(ctx, bloom, tx.Hash())
+		server.AppendToEvmTxDeferredInfo(ctx, bloom, tx.Hash(), surplus)
 		if serverRes.VmError == "" && tx.To() == nil {
 			server.AddToWhitelistIfApplicable(ctx, tx.Data(), common.HexToAddress(receipt.ContractAddress))
 		}
@@ -148,7 +149,7 @@ func (k *Keeper) getGasPool(ctx sdk.Context) (sdk.Context, core.GasPool) {
 }
 
 func (server msgServer) getEVMMessage(ctx sdk.Context, tx *ethtypes.Transaction) (*core.Message, error) {
-	cfg := server.GetChainConfig(ctx).EthereumConfig(server.ChainID(ctx))
+	cfg := types.DefaultChainConfig().EthereumConfig(server.ChainID(ctx))
 	signer := ethtypes.MakeSigner(cfg, big.NewInt(ctx.BlockHeight()), uint64(ctx.BlockTime().Unix()))
 	return core.TransactionToMessage(tx, signer, nil)
 }
@@ -158,7 +159,7 @@ func (server msgServer) getEVM(ctx sdk.Context, msg *core.Message, stateDB *stat
 	if err != nil {
 		return nil, err
 	}
-	cfg := server.GetChainConfig(ctx).EthereumConfig(server.ChainID(ctx))
+	cfg := types.DefaultChainConfig().EthereumConfig(server.ChainID(ctx))
 	txCtx := core.NewEVMTxContext(msg)
 
 	logger := evmtracers.GetCtxBlockchainLogger(ctx)

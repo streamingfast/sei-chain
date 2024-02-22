@@ -229,7 +229,6 @@ var (
 		evmtypes.ModuleName:            {authtypes.Minter, authtypes.Burner},
 		dexmoduletypes.ModuleName:      nil,
 		tokenfactorytypes.ModuleName:   {authtypes.Minter, authtypes.Burner},
-		banktypes.WeiEscrowName:        nil,
 		// this line is used by starport scaffolding # stargate/app/maccPerms
 	}
 
@@ -1432,7 +1431,7 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 		} else {
 			if isEVM, _ := evmante.IsEVMMessage(typedTx); isEVM {
 				msg := evmtypes.MustGetEVMTransactionMessage(typedTx)
-				if err := evmante.Preprocess(ctx, msg, app.EvmKeeper.GetParams(ctx)); err != nil {
+				if err := evmante.Preprocess(ctx, msg); err != nil {
 					ctx.Logger().Error(fmt.Sprintf("error preprocessing EVM tx due to %s", err))
 					typedTxs = append(typedTxs, nil)
 					continue
@@ -1460,6 +1459,7 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 	for relativeOtherIndex, originalIndex := range otherIndices {
 		txResults[originalIndex] = otherResults[relativeOtherIndex]
 	}
+	app.EvmKeeper.SetTxResults(txResults)
 
 	// Finalize all Bank Module Transfers here so that events are included
 	lazyWriteEvents := app.BankKeeper.WriteDeferredBalances(ctx)

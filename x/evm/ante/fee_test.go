@@ -37,10 +37,7 @@ func TestEVMFeeCheckDecoratorCancun(t *testing.T) {
 		Data:      []byte("abc"),
 		ChainID:   chainID,
 	}
-	evmParams := k.GetParams(ctx)
-	evmParams.ChainConfig.CancunTime = 0 // overwrite to enable cancun
-	k.SetParams(ctx, evmParams)
-	chainCfg := evmParams.GetChainConfig()
+	chainCfg := types.DefaultChainConfig()
 	ethCfg := chainCfg.EthereumConfig(chainID)
 	blockNum := big.NewInt(ctx.BlockHeight())
 	signer := ethtypes.MakeSigner(ethCfg, blockNum, uint64(ctx.BlockTime().Unix()))
@@ -173,94 +170,91 @@ func TestEVMFeeCheckDecoratorCancun(t *testing.T) {
 	require.NotNil(t, err)
 }
 
-func TestEVMFeeCheckDecoratorLondon(t *testing.T) {
+func TestCalculatePriorityScenarios(t *testing.T) {
 	k, ctx := testkeeper.MockEVMKeeper()
-	ctx = ctx.WithIsCheckTx(true)
-	handler := ante.NewEVMFeeCheckDecorator(k)
-	privKey := testkeeper.MockPrivateKey()
-	testPrivHex := hex.EncodeToString(privKey.Bytes())
-	key, _ := crypto.HexToECDSA(testPrivHex)
-	to := new(common.Address)
-	copy(to[:], []byte("0x1234567890abcdef1234567890abcdef12345678"))
-	chainID := k.ChainID(ctx)
-	txData := ethtypes.DynamicFeeTx{
-		Nonce:     1,
-		GasFeeCap: big.NewInt(10000000000000),
-		Gas:       1000,
-		To:        to,
-		Value:     big.NewInt(1000000000000000),
-		Data:      []byte("abc"),
-		ChainID:   chainID,
+	decorator := ante.NewEVMFeeCheckDecorator(k)
+
+	scenarios := []struct {
+		name             string
+		txData           ethtypes.TxData
+		expectedPriority *big.Int
+	}{
+		{
+			name: "DynamicFeeTx with tip",
+			txData: &ethtypes.DynamicFeeTx{
+				GasFeeCap: big.NewInt(10000000000000),
+				GasTipCap: big.NewInt(10000000000000),
+				Value:     big.NewInt(1000000000000000),
+			},
+			expectedPriority: big.NewInt(10),
+		},
+		{
+			name: "DynamicFeeTx value does not change priority",
+			txData: &ethtypes.DynamicFeeTx{
+				GasFeeCap: big.NewInt(10000000000000),
+				GasTipCap: big.NewInt(10000000000000),
+				Value:     big.NewInt(1),
+			},
+			expectedPriority: big.NewInt(10),
+		},
+		{
+			name: "DynamicFeeTx with no tip",
+			txData: &ethtypes.DynamicFeeTx{
+				GasFeeCap: big.NewInt(10000000000000),
+				GasTipCap: big.NewInt(0),
+				Value:     big.NewInt(1000000000000000),
+			},
+			expectedPriority: big.NewInt(0),
+		},
+		{
+			name: "DynamicFeeTx with a non-multiple of 10 tip",
+			txData: &ethtypes.DynamicFeeTx{
+				GasFeeCap: big.NewInt(1000000000000000),
+				GasTipCap: big.NewInt(9999999999999),
+				Value:     big.NewInt(1000000000),
+			},
+			expectedPriority: big.NewInt(9),
+		},
+		{
+			name: "LegacyTx has priority with gas price",
+			txData: &ethtypes.LegacyTx{
+				GasPrice: big.NewInt(10000000000000),
+				Value:    big.NewInt(1000000000000000),
+			},
+			expectedPriority: big.NewInt(10),
+		},
+		{
+			name: "LegacyTx has zero priority with zero gas price",
+			txData: &ethtypes.LegacyTx{
+				GasPrice: big.NewInt(0),
+				Value:    big.NewInt(1000000000000000),
+			},
+			expectedPriority: big.NewInt(0),
+		},
+		{
+			name: "LegacyTx with a non-multiple of 10 gas price",
+			txData: &ethtypes.LegacyTx{
+				GasPrice: big.NewInt(9999999999999),
+				Value:    big.NewInt(1000000000000000),
+			},
+			expectedPriority: big.NewInt(9),
+		},
 	}
-	evmParams := k.GetParams(ctx)
-	chainCfg := evmParams.GetChainConfig()
-	ethCfg := chainCfg.EthereumConfig(chainID)
-	blockNum := big.NewInt(ctx.BlockHeight())
-	signer := ethtypes.MakeSigner(ethCfg, blockNum, uint64(ctx.BlockTime().Unix()))
-	tx, err := ethtypes.SignTx(ethtypes.NewTx(&txData), signer, key)
-	require.Nil(t, err)
-	typedTx, err := ethtx.NewDynamicFeeTx(tx)
-	require.Nil(t, err)
-	msg, err := types.NewMsgEVMTransaction(typedTx)
-	require.Nil(t, err)
 
-	preprocessor := ante.NewEVMPreprocessDecorator(k, k.AccountKeeper())
-	ctx, err = preprocessor.AnteHandle(ctx, mockTx{msgs: []sdk.Msg{msg}}, false, func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
-		return ctx, nil
-	})
-	require.Nil(t, err)
+	// Run each scenario
+	for _, s := range scenarios {
+		t.Run(s.name, func(t *testing.T) {
+			tx := ethtypes.NewTx(s.txData)
+			txData, err := ethtx.NewTxDataFromTx(tx)
+			require.NoError(t, err)
+			priority := decorator.CalculatePriority(ctx, txData)
 
-	// should return error because gas fee cap is too low
-	_, err = handler.AnteHandle(ctx, mockTx{msgs: []sdk.Msg{msg}}, false, func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
-		return ctx, nil
-	})
-	require.NotNil(t, err)
-
-	txData.GasFeeCap = k.GetMinimumFeePerGas(ctx).RoundInt().BigInt()
-	tx, err = ethtypes.SignTx(ethtypes.NewTx(&txData), signer, key)
-	require.Nil(t, err)
-	typedTx, err = ethtx.NewDynamicFeeTx(tx)
-	require.Nil(t, err)
-	msg, err = types.NewMsgEVMTransaction(typedTx)
-	require.Nil(t, err)
-
-	// should return error because the sender does not have enough funds
-	ctx, err = preprocessor.AnteHandle(ctx, mockTx{msgs: []sdk.Msg{msg}}, false, func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
-		return ctx, nil
-	})
-	require.Nil(t, err)
-	_, err = handler.AnteHandle(ctx, mockTx{msgs: []sdk.Msg{msg}}, false, func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
-		return ctx, nil
-	})
-	require.NotNil(t, err)
-
-	amt := typedTx.Cost()
-	coinsAmt := sdk.NewCoins(sdk.NewCoin(k.GetBaseDenom(ctx), sdk.NewIntFromBigInt(amt).Quo(sdk.NewIntFromBigInt(state.UseiToSweiMultiplier)).Add(sdk.OneInt())))
-	k.BankKeeper().MintCoins(ctx, types.ModuleName, coinsAmt)
-	seiAddr := sdk.AccAddress(msg.Derived.SenderSeiAddr)
-	k.BankKeeper().SendCoinsFromModuleToAccount(ctx, types.ModuleName, seiAddr, coinsAmt)
-
-	// should succeed now that the sender has enough funds
-	ctx, err = preprocessor.AnteHandle(ctx, mockTx{msgs: []sdk.Msg{msg}}, false, func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
-		return ctx, nil
-	})
-	require.Nil(t, err)
-	_, err = handler.AnteHandle(ctx, mockTx{msgs: []sdk.Msg{msg}}, false, func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
-		return ctx, nil
-	})
-	require.Nil(t, err)
-
-	// should fail because blob tx is not support in london
-	blobTxData := ethtypes.BlobTx{
-		Nonce:      1,
-		GasFeeCap:  uint256.MustFromBig(txData.GasFeeCap),
-		Gas:        1000,
-		To:         *to,
-		Value:      uint256.NewInt(1000000000000000),
-		Data:       []byte("abc"),
-		BlobHashes: []common.Hash{{}},
-		ChainID:    uint256.MustFromBig(chainID),
+			if s.expectedPriority != nil {
+				// Check the returned value
+				if priority.Cmp(s.expectedPriority) != 0 {
+					t.Errorf("Expected priority %v, but got %v", s.expectedPriority, priority)
+				}
+			}
+		})
 	}
-	tx, err = ethtypes.SignTx(ethtypes.NewTx(&blobTxData), signer, key)
-	require.NotNil(t, err)
 }

@@ -1,6 +1,8 @@
 package state
 
 import (
+	"fmt"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -21,9 +23,6 @@ type DBImpl struct {
 	// back.
 	err error
 
-	// a temporary address that facilitates transfer during the processing of this particular
-	// transaction. Its account state and balance will be deleted before the block commits
-	middleManAddress sdk.AccAddress
 	// a temporary address that collects fees for this particular transaction so that there is
 	// no single bottleneck for fee collection. Its account state and balance will be deleted
 	// before the block commits
@@ -40,8 +39,7 @@ func NewDBImpl(ctx sdk.Context, k EVMKeeper, simulation bool) *DBImpl {
 		ctx:              ctx,
 		k:                k,
 		snapshottedCtxs:  []sdk.Context{},
-		middleManAddress: GetMiddleManAddress(ctx),
-		coinbaseAddress:  GetCoinbaseAddress(ctx),
+		coinbaseAddress:  GetCoinbaseAddress(ctx.TxIndex()),
 		simulation:       simulation,
 		tempStateCurrent: NewTemporaryState(),
 	}
@@ -64,12 +62,13 @@ func (s *DBImpl) SetEVM(evm *vm.EVM) {
 // to the database.
 func (s *DBImpl) AddPreimage(_ common.Hash, _ []byte) {}
 
-func (s *DBImpl) Finalize() error {
+func (s *DBImpl) Finalize() (surplus sdk.Int, err error) {
 	if s.simulation {
 		panic("should never call finalize on a simulation DB")
 	}
 	if s.err != nil {
-		return s.err
+		err = s.err
+		return
 	}
 
 	// remove transient states
@@ -79,7 +78,14 @@ func (s *DBImpl) Finalize() error {
 	for i := len(s.snapshottedCtxs) - 1; i > 0; i-- {
 		s.flushCtx(s.snapshottedCtxs[i])
 	}
-	return nil
+	surplus = s.tempStateCurrent.surplus
+	for _, ts := range s.tempStatesHist {
+		surplus = surplus.Add(ts.surplus)
+	}
+	if surplus.IsNegative() {
+		err = fmt.Errorf("negative surplus value: %s", surplus.String())
+	}
+	return
 }
 
 func (s *DBImpl) flushCtx(ctx sdk.Context) {
@@ -103,7 +109,6 @@ func (s *DBImpl) Copy() interface{} {
 		tempStateCurrent: NewTemporaryState(),
 		tempStatesHist:   append(s.tempStatesHist, s.tempStateCurrent),
 		k:                s.k,
-		middleManAddress: s.middleManAddress,
 		coinbaseAddress:  s.coinbaseAddress,
 		simulation:       s.simulation,
 		err:              s.err,
@@ -159,6 +164,7 @@ type TemporaryState struct {
 	transientStates       map[string]map[string]common.Hash
 	transientAccounts     map[string][]byte
 	transientModuleStates map[string][]byte
+	surplus               sdk.Int // in wei
 }
 
 func NewTemporaryState() *TemporaryState {
@@ -167,5 +173,6 @@ func NewTemporaryState() *TemporaryState {
 		transientStates:       make(map[string]map[string]common.Hash),
 		transientAccounts:     make(map[string][]byte),
 		transientModuleStates: make(map[string][]byte),
+		surplus:               sdk.NewInt(0),
 	}
 }
