@@ -1384,7 +1384,7 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 	ctx = ctx.WithContext(goCtx)
 
 	tracer := evmtracers.NewFirehoseLogger()
-	tracer.OnSeiBlockchainInit(app.EvmKeeper.GetChainConfig(ctx).EthereumConfig(app.EvmKeeper.ChainID(ctx)))
+	tracer.OnSeiBlockchainInit(evmtypes.DefaultChainConfig().EthereumConfig(app.EvmKeeper.ChainID(ctx)))
 
 	ctx = evmtracers.SetCtxBlockchainLogger(ctx, tracer)
 
