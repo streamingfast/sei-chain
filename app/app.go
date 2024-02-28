@@ -372,6 +372,7 @@ type App struct {
 
 	encodingConfig appparams.EncodingConfig
 	evmRPCConfig   evmrpc.Config
+	evmTracer      evmtracers.BlockchainLogger
 }
 
 // New returns a reference to an initialized blockchain app
@@ -589,6 +590,20 @@ func New(
 	app.evmRPCConfig, err = evmrpc.ReadConfig(appOpts)
 	if err != nil {
 		panic(fmt.Sprintf("error reading EVM config due to %s", err))
+	}
+
+	if app.evmRPCConfig.LiveEVMTracer != "" {
+		// PR_REVIEW_NOTE: So I moved this code from `ProcessBlock` and there, I had access to `ctx` so the code was actually looking
+		//                 like `evmtypes.DefaultChainConfig().EthereumConfig(app.EvmKeeper.ChainID(ctx))`. But here, I don't have access to `ctx`
+		//                 Is there another mean to get the EVM chainID from here? I need it to call `OnSeiBlockchainInit` on the logger,
+		//                 so another solution would be to call this one later when EVM chainID is known. Last resort, we have a sync.Once
+		//                 that we can use to call it only once.
+		chainConfig := evmtypes.DefaultChainConfig().EthereumConfig(big.NewInt(int64(app.evmRPCConfig.LiveEVMTracerChainID)))
+		evmTracer, err := evmtracers.NewBlockchainLogger(evmtracers.GlobalLiveTracerRegistry, app.evmRPCConfig.LiveEVMTracer, chainConfig)
+		if err != nil {
+			panic(fmt.Sprintf("error creating EVM tracer due to %s", err))
+		}
+		app.evmTracer = evmTracer
 	}
 
 	customDependencyGenerators := aclmapping.NewCustomDependencyGenerator()
@@ -1383,10 +1398,9 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 	goCtx := app.decorateContextWithDexMemState(ctx.Context())
 	ctx = ctx.WithContext(goCtx)
 
-	tracer := evmtracers.NewFirehoseLogger()
-	tracer.OnSeiBlockchainInit(evmtypes.DefaultChainConfig().EthereumConfig(app.EvmKeeper.ChainID(ctx)))
-
-	ctx = evmtracers.SetCtxBlockchainLogger(ctx, tracer)
+	if app.evmTracer != nil {
+		ctx = evmtracers.SetCtxBlockchainLogger(ctx, app.evmTracer)
+	}
 
 	events = []abci.Event{}
 	beginBlockReq := abci.RequestBeginBlock{
@@ -1416,11 +1430,13 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 	txResults = make([]*abci.ExecTxResult, len(txs))
 	typedTxs := []sdk.Tx{}
 
-	header := ctx.BlockHeader()
-	tracer.OnSeiBlockStart(req.GetHash(), uint64(header.Size()), TmBlockHeaderToEVM(ctx, header, &app.EvmKeeper))
-	defer func() {
-		tracer.OnSeiBlockEnd(err)
-	}()
+	if app.evmTracer != nil {
+		header := ctx.BlockHeader()
+		app.evmTracer.OnSeiBlockStart(req.GetHash(), uint64(header.Size()), TmBlockHeaderToEVM(ctx, header, &app.EvmKeeper))
+		defer func() {
+			app.evmTracer.OnSeiBlockEnd(err)
+		}()
+	}
 
 	for i, tx := range txs {
 		typedTx, err := app.txDecoder(tx)

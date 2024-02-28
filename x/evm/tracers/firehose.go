@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net/url"
 	"os"
 	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -37,24 +37,21 @@ var firehoseTracerLogLevel = strings.ToLower(os.Getenv("GETH_FIREHOSE_TRACER_LOG
 var isFirehoseDebugEnabled = firehoseTracerLogLevel == "debug" || firehoseTracerLogLevel == "trace"
 var isFirehoseTracerEnabled = firehoseTracerLogLevel == "trace"
 
-var globalInitSent = new(atomic.Bool)
-
 func init() {
 	staticFirehoseChainValidationOnInit()
 
-	// directory.LiveDirectory.Register("firehose", newFirehoseTracer)
+	GlobalLiveTracerRegistry.Register("firehose", newFirehoseTracer)
 }
 
-// func newFirehoseTracer() (core.BlockchainLogger, error) {
-// 	firehoseDebug("New firehose tracer")
-// 	return NewFirehoseLogger(), nil
-// }
+func newFirehoseTracer(_ *url.URL) (BlockchainLogger, error) {
+	firehoseDebug("New firehose tracer")
+	return NewFirehoseLogger(), nil
+}
 
 type Firehose struct {
 	// Global state
 	chainConfig  *params.ChainConfig
 	outputBuffer *bytes.Buffer
-	initSent     *atomic.Bool
 
 	// Block state
 	block         *pbeth.Block
@@ -82,7 +79,6 @@ func NewFirehoseLogger() *Firehose {
 	return &Firehose{
 		// Global state
 		outputBuffer: bytes.NewBuffer(make([]byte, 0, 100*1024*1024)),
-		initSent:     globalInitSent,
 
 		// Block state
 		blockOrdinal:  &Ordinal{},
@@ -122,6 +118,9 @@ func (f *Firehose) resetTransaction() {
 
 func (f *Firehose) OnSeiBlockchainInit(chainConfig *params.ChainConfig) {
 	f.chainConfig = chainConfig
+
+	// PR_REVIEW_NOTE: Can I get the Sei version too here somehow? Right now this is the `go-ethereum` version
+	printToFirehose("INIT", FirehoseProtocolVersion, "sei", params.Version)
 }
 
 func (f *Firehose) OnSeiBlockStart(hash []byte, size uint64, b *types.Header) {
@@ -1017,10 +1016,6 @@ func (f *Firehose) panicNotInState(msg string) string {
 //
 // It flushes this through [flushToFirehose] to the `os.Stdout` writer.
 func (f *Firehose) printBlockToFirehose(block *pbeth.Block, finalityStatus *FinalityStatus) {
-	if wasNeverSent := f.initSent.CompareAndSwap(false, true); wasNeverSent {
-		printToFirehose("INIT", FirehoseProtocolVersion, "geth", params.Version)
-	}
-
 	marshalled, err := proto.Marshal(block)
 	if err != nil {
 		panic(fmt.Errorf("failed to marshal block: %w", err))
