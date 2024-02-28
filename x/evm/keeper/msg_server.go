@@ -62,14 +62,11 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 	}
 
 	logger := evmtracers.GetCtxBlockchainLogger(ctx)
-	var transitionRes *core.ExecutionResult
-
 	if logger != nil {
 		logger.CaptureTxStart(evmInstance, tx, emsg.From)
-		defer func() {
-		}()
 	}
 
+	var transitionRes *core.ExecutionResult
 	defer func() {
 		if pe := recover(); pe != nil {
 			ctx.Logger().Error(fmt.Sprintf("EVM PANIC: %s", pe))
