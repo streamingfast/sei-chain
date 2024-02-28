@@ -145,7 +145,13 @@ type Backend struct {
 }
 
 func NewBackend(ctxProvider func(int64) sdk.Context, keeper *keeper.Keeper, txDecoder sdk.TxDecoder, tmClient rpcclient.Client, config *SimulateConfig) *Backend {
-	return &Backend{ctxProvider: ctxProvider, keeper: keeper, txDecoder: txDecoder, tmClient: tmClient, config: config}
+	return &Backend{
+		ctxProvider: ctxProvider,
+		keeper:      keeper,
+		txDecoder:   txDecoder,
+		tmClient:    tmClient,
+		config:      config,
+	}
 }
 
 func (b *Backend) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (vm.StateDB, *ethtypes.Header, error) {
@@ -167,7 +173,7 @@ func (b *Backend) GetTransaction(ctx context.Context, txHash common.Hash) (tx *e
 		return nil, common.Hash{}, 0, 0, err
 	}
 	txHeight := int64(receipt.BlockNumber)
-	block, err := b.tmClient.Block(ctx, &txHeight)
+	block, err := blockByNumber(ctx, b.tmClient, &txHeight)
 	if err != nil {
 		return nil, common.Hash{}, 0, 0, err
 	}
@@ -188,8 +194,8 @@ func (b *Backend) ChainDb() ethdb.Database {
 }
 
 func (b Backend) BlockByNumber(ctx context.Context, bn rpc.BlockNumber) (*ethtypes.Block, error) {
-	bnn := bn.Int64()
-	tmBlock, err := b.tmClient.Block(ctx, &bnn)
+	blockNum := bn.Int64()
+	tmBlock, err := blockByNumber(ctx, b.tmClient, &blockNum)
 	if err != nil {
 		return nil, err
 	}
@@ -223,12 +229,9 @@ func (b Backend) BlockByNumber(ctx context.Context, bn rpc.BlockNumber) (*ethtyp
 }
 
 func (b Backend) BlockByHash(ctx context.Context, hash common.Hash) (*ethtypes.Block, error) {
-	tmBlock, err := b.tmClient.BlockByHash(ctx, hash.Bytes())
+	tmBlock, err := blockByHash(ctx, b.tmClient, hash.Bytes())
 	if err != nil {
 		return nil, err
-	}
-	if tmBlock.Block == nil {
-		panic("tmBlock.Block is nil")
 	}
 	blockNumber := rpc.BlockNumber(tmBlock.Block.Height)
 	return b.BlockByNumber(ctx, blockNumber)
@@ -297,6 +300,12 @@ func (b *Backend) StateAtTransaction(ctx context.Context, block *ethtypes.Block,
 	return nil, vm.BlockContext{}, nil, nil, fmt.Errorf("transaction index %d out of range for block %#x", txIndex, block.Hash())
 }
 
+func (b *Backend) StateAtBlock(ctx context.Context, block *ethtypes.Block, reexec uint64, base vm.StateDB, readOnly bool, preferDisk bool) (vm.StateDB, tracers.StateReleaseFunc, error) {
+	emptyRelease := func() {}
+	statedb := state.NewDBImpl(b.ctxProvider(block.Number().Int64()-1), b.keeper, true)
+	return statedb, emptyRelease, nil
+}
+
 func (b *Backend) GetEVM(_ context.Context, msg *core.Message, stateDB vm.StateDB, _ *ethtypes.Header, vmConfig *vm.Config, _ *vm.BlockContext) *vm.EVM {
 	txContext := core.NewEVMTxContext(msg)
 	context, _ := b.keeper.GetVMBlockContext(b.ctxProvider(LatestCtxHeight), core.GasPool(b.RPCGasCap()))
@@ -330,9 +339,9 @@ func (b *Backend) getBlockHeight(ctx context.Context, blockNrOrHash rpc.BlockNum
 			currentHeight := b.ctxProvider(LatestCtxHeight).BlockHeight()
 			blockNumber = &currentHeight
 		}
-		block, err = b.tmClient.Block(ctx, blockNumber)
+		block, err = blockByNumber(ctx, b.tmClient, blockNumber)
 	} else {
-		block, err = b.tmClient.BlockByHash(ctx, blockNrOrHash.BlockHash[:])
+		block, err = blockByHash(ctx, b.tmClient, blockNrOrHash.BlockHash[:])
 	}
 	if err != nil {
 		return 0, err
@@ -341,13 +350,19 @@ func (b *Backend) getBlockHeight(ctx context.Context, blockNrOrHash rpc.BlockNum
 }
 
 func (b *Backend) getHeader(blockNumber *big.Int) *ethtypes.Header {
-	return &ethtypes.Header{
+	header := &ethtypes.Header{
 		Difficulty: common.Big0,
 		Number:     blockNumber,
 		BaseFee:    b.keeper.GetBaseFeePerGas(b.ctxProvider(LatestCtxHeight)).BigInt(),
 		GasLimit:   b.config.GasCap,
 		Time:       uint64(time.Now().Unix()),
 	}
+	number := blockNumber.Int64()
+	block, err := blockByNumber(context.Background(), b.tmClient, &number)
+	if err == nil {
+		header.ParentHash = common.BytesToHash(block.BlockID.Hash)
+	}
+	return header
 }
 
 type Engine struct {
