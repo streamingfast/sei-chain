@@ -159,12 +159,12 @@ func (server msgServer) getEVM(ctx sdk.Context, msg *core.Message, stateDB *stat
 	cfg := types.DefaultChainConfig().EthereumConfig(server.ChainID(ctx))
 	txCtx := core.NewEVMTxContext(msg)
 
-	logger := evmtracers.GetCtxBlockchainLogger(ctx)
+	hooks := evmtracers.GetCtxEthTracingHooks(ctx)
 	evmInstance := vm.NewEVM(*blockCtx, txCtx, stateDB, cfg, vm.Config{
-		Tracer: logger.Hooks,
+		Tracer: hooks,
 	})
 	stateDB.SetEVM(evmInstance)
-	stateDB.SetLogger(logger.Hooks)
+	stateDB.SetLogger(hooks)
 
 	return evmInstance, nil
 }

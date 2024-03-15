@@ -4,7 +4,7 @@ import (
 	"math/big"
 	"testing"
 
-	ethstate "github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	testkeeper "github.com/sei-protocol/sei-chain/testutil/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
 	"github.com/stretchr/testify/require"
@@ -36,11 +36,11 @@ func TestEmpty(t *testing.T) {
 	require.True(t, statedb.Empty(addr))
 
 	// has balance
-	statedb.AddBalance(addr, big.NewInt(1000000000000), ethstate.BalanceChangeUnspecified)
+	statedb.AddBalance(addr, big.NewInt(1000000000000), tracing.BalanceChangeUnspecified)
 	require.False(t, statedb.Empty(addr))
 
 	// has non-zero nonce
-	statedb.SubBalance(addr, big.NewInt(1000000000000), ethstate.BalanceChangeUnspecified)
+	statedb.SubBalance(addr, big.NewInt(1000000000000), tracing.BalanceChangeUnspecified)
 	statedb.SetNonce(addr, 1)
 	require.False(t, statedb.Empty(addr))
 

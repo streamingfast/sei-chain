@@ -6,7 +6,7 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
-	ethstate "github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	testkeeper "github.com/sei-protocol/sei-chain/testutil/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
@@ -20,7 +20,7 @@ func TestState(t *testing.T) {
 	statedb.CreateAccount(evmAddr)
 	require.True(t, statedb.Created(evmAddr))
 	require.False(t, statedb.HasSelfDestructed(evmAddr))
-	statedb.AddBalance(evmAddr, big.NewInt(10), ethstate.BalanceChangeUnspecified)
+	statedb.AddBalance(evmAddr, big.NewInt(10), tracing.BalanceChangeUnspecified)
 	k.BankKeeper().MintCoins(statedb.Ctx(), types.ModuleName, sdk.NewCoins(sdk.NewCoin(k.GetBaseDenom(ctx), sdk.NewInt(10))))
 	key := common.BytesToHash([]byte("abc"))
 	val := common.BytesToHash([]byte("def"))
@@ -61,7 +61,7 @@ func TestCreate(t *testing.T) {
 	tval := common.BytesToHash([]byte("mno"))
 	statedb.SetState(evmAddr, key, val)
 	statedb.SetTransientState(evmAddr, tkey, tval)
-	statedb.AddBalance(evmAddr, big.NewInt(10000000000000), ethstate.BalanceChangeUnspecified)
+	statedb.AddBalance(evmAddr, big.NewInt(10000000000000), tracing.BalanceChangeUnspecified)
 	// recreate an account should clear its state, but keep its balance and transient state
 	statedb.CreateAccount(evmAddr)
 	require.Equal(t, tval, statedb.GetTransientState(evmAddr, tkey))

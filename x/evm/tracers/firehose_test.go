@@ -9,7 +9,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	pbeth "github.com/ethereum/go-ethereum/pb/sf/ethereum/type/v2"
+	pbeth "github.com/sei-protocol/sei-chain/pb/sf/ethereum/type/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/maps"

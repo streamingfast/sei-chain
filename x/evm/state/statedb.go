@@ -101,7 +101,7 @@ func (s *DBImpl) GetStorageRoot(common.Address) common.Hash {
 	panic("GetStorageRoot is not implemented and called unexpectedly")
 }
 
-func (s *DBImpl) Copy() interface{} {
+func (s *DBImpl) Copy() vm.StateDB {
 	newCtx := s.ctx.WithMultiStore(s.ctx.MultiStore().CacheMultiStore())
 	return &DBImpl{
 		ctx:              newCtx,

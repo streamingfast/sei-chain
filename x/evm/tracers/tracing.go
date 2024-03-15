@@ -6,6 +6,7 @@ import (
 	"net/url"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	ethtracing "github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/sei-protocol/sei-chain/x/evm/tracing"
 )
@@ -64,6 +65,8 @@ func SetCtxBlockchainLogger(ctx sdk.Context, logger *tracing.Hooks) sdk.Context 
 	return ctx.WithContext(context.WithValue(ctx.Context(), CtxBlockchainLoggerKey, logger))
 }
 
+// GetCtxBlockchainLogger function to get the SEI specific [tracing.Hooks] struct
+// used to trace EVM blocks and transactions.
 func GetCtxBlockchainLogger(ctx sdk.Context) *tracing.Hooks {
 	rawVal := ctx.Context().Value(CtxBlockchainLoggerKey)
 	if rawVal == nil {
@@ -74,4 +77,15 @@ func GetCtxBlockchainLogger(ctx sdk.Context) *tracing.Hooks {
 		return nil
 	}
 	return logger
+}
+
+// GetCtxEthTracingHooks is a convenience function to get the ethtracing.Hooks from the context
+// avoiding nil pointer exceptions when trying to send the tracer to lower-level go-ethereum components
+// that deals with *tracing.Hooks directly.
+func GetCtxEthTracingHooks(ctx sdk.Context) *ethtracing.Hooks {
+	if logger := GetCtxBlockchainLogger(ctx); logger != nil {
+		return logger.Hooks
+	}
+
+	return nil
 }
