@@ -125,6 +125,7 @@ import (
 	evmante "github.com/sei-protocol/sei-chain/x/evm/ante"
 	evmkeeper "github.com/sei-protocol/sei-chain/x/evm/keeper"
 	evmtracers "github.com/sei-protocol/sei-chain/x/evm/tracers"
+	"github.com/sei-protocol/sei-chain/x/evm/tracing"
 	evmtypes "github.com/sei-protocol/sei-chain/x/evm/types"
 	"github.com/spf13/cast"
 	abci "github.com/tendermint/tendermint/abci/types"
@@ -372,7 +373,7 @@ type App struct {
 
 	encodingConfig appparams.EncodingConfig
 	evmRPCConfig   evmrpc.Config
-	evmTracer      evmtracers.BlockchainLogger
+	evmTracer      *tracing.Hooks
 }
 
 // New returns a reference to an initialized blockchain app

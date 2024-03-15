@@ -6,7 +6,7 @@ import (
 	storetypes "github.com/cosmos/cosmos-sdk/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
 )
 
@@ -59,7 +59,7 @@ func (s *DBImpl) SelfDestruct(acc common.Address) {
 		s.k.DeleteAddressMapping(s.ctx, seiAddr, acc)
 	}
 
-	s.SubBalance(acc, s.GetBalance(acc), state.BalanceDecreaseSelfdestruct)
+	s.SubBalance(acc, s.GetBalance(acc), tracing.BalanceDecreaseSelfdestruct)
 
 	// clear account state
 	s.clearAccountState(acc)

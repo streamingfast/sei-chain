@@ -62,8 +62,8 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 	}
 
 	logger := evmtracers.GetCtxBlockchainLogger(ctx)
-	if logger != nil {
-		logger.CaptureTxStart(evmInstance, tx, emsg.From)
+	if logger != nil && logger.OnTxStart != nil {
+		logger.OnTxStart(evmInstance.GetVMContext(), tx, emsg.From)
 	}
 
 	var transitionRes *core.ExecutionResult
@@ -73,7 +73,7 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 			panic(pe)
 		}
 
-		if logger != nil {
+		if logger != nil && logger.OnTxEnd != nil {
 			var receipt *ethtypes.Receipt
 			if err == nil {
 				receipt = server.getEthReceipt(ctx, tx, emsg, serverRes, stateDB)
@@ -84,7 +84,7 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 				txErr = transitionRes.Err
 			}
 
-			logger.CaptureTxEnd(receipt, txErr)
+			logger.OnTxEnd(receipt, txErr)
 		}
 
 		if err != nil {
@@ -161,10 +161,10 @@ func (server msgServer) getEVM(ctx sdk.Context, msg *core.Message, stateDB *stat
 
 	logger := evmtracers.GetCtxBlockchainLogger(ctx)
 	evmInstance := vm.NewEVM(*blockCtx, txCtx, stateDB, cfg, vm.Config{
-		Tracer: logger,
+		Tracer: logger.Hooks,
 	})
 	stateDB.SetEVM(evmInstance)
-	stateDB.SetLogger(logger)
+	stateDB.SetLogger(logger.Hooks)
 
 	return evmInstance, nil
 }

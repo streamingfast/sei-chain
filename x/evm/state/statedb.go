@@ -5,7 +5,7 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/sei-protocol/sei-chain/utils"
@@ -31,7 +31,7 @@ type DBImpl struct {
 	k          EVMKeeper
 	simulation bool
 
-	logger state.StateLogger
+	logger *tracing.Hooks
 }
 
 func NewDBImpl(ctx sdk.Context, k EVMKeeper, simulation bool) *DBImpl {
@@ -47,7 +47,7 @@ func NewDBImpl(ctx sdk.Context, k EVMKeeper, simulation bool) *DBImpl {
 	return s
 }
 
-func (s *DBImpl) SetLogger(logger state.StateLogger) {
+func (s *DBImpl) SetLogger(logger *tracing.Hooks) {
 	s.logger = logger
 }
 
