@@ -29,6 +29,10 @@ func (s *DBImpl) getState(ctx sdk.Context, addr common.Address, hash common.Hash
 }
 
 func (s *DBImpl) SetState(addr common.Address, key common.Hash, val common.Hash) {
+	if s.logger != nil && s.logger.OnStorageChange != nil {
+		s.logger.OnStorageChange(addr, key, s.GetState(addr, key), val)
+	}
+
 	s.k.SetState(s.ctx, addr, key, val)
 }
 

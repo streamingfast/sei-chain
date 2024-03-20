@@ -9,5 +9,10 @@ func (s *DBImpl) GetNonce(addr common.Address) uint64 {
 }
 
 func (s *DBImpl) SetNonce(addr common.Address, nonce uint64) {
+	if s.logger != nil && s.logger.OnNonceChange != nil {
+		// The SetCode method could be modified to return the old code/hash directly.
+		s.logger.OnNonceChange(addr, s.GetNonce(addr), nonce)
+	}
+
 	s.k.SetNonce(s.ctx, addr, nonce)
 }
