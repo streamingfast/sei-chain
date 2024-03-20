@@ -81,5 +81,6 @@ func HandlePaymentUseiWei(ctx sdk.Context, precompileAddr sdk.AccAddress, payer 
 	if err := bankKeeper.SendCoinsAndWei(ctx, precompileAddr, payer, usei, wei); err != nil {
 		return sdk.Int{}, sdk.Int{}, err
 	}
+
 	return usei, wei, nil
 }

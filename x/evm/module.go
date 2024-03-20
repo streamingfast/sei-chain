@@ -3,10 +3,12 @@ package evm
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 
 	// this line is used by starport scaffolding # 1
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/gorilla/mux"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
@@ -25,6 +27,7 @@ import (
 	"github.com/sei-protocol/sei-chain/x/evm/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/migrations"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
+	"github.com/sei-protocol/sei-chain/x/evm/tracers"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
 )
 
@@ -175,6 +178,9 @@ func (am AppModule) BeginBlock(sdk.Context, abci.RequestBeginBlock) {
 // returns no validator updates.
 func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.ValidatorUpdate {
 	evmTxDeferredInfoList := am.keeper.GetEVMTxDeferredInfo(ctx)
+	evmHooks := tracers.GetCtxEthTracingHooks(ctx)
+	feeCollectorModuleAddress := am.keeper.AccountKeeper().GetModuleAddress(authtypes.FeeCollectorName)
+
 	denom := am.keeper.GetBaseDenom(ctx)
 	surplus := sdk.NewInt(0)
 	for _, deferredInfo := range evmTxDeferredInfoList {
@@ -183,21 +189,41 @@ func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.Val
 		balance := am.keeper.BankKeeper().GetBalance(ctx, coinbaseAddress, denom)
 		weiBalance := am.keeper.BankKeeper().GetWeiBalance(ctx, coinbaseAddress)
 		if !balance.Amount.IsZero() || !weiBalance.IsZero() {
-			if err := am.keeper.BankKeeper().SendCoinsAndWei(ctx, coinbaseAddress, am.keeper.AccountKeeper().GetModuleAddress(authtypes.FeeCollectorName), balance.Amount, weiBalance); err != nil {
+			if err := am.keeper.BankKeeper().SendCoinsAndWei(ctx, coinbaseAddress, feeCollectorModuleAddress, balance.Amount, weiBalance); err != nil {
 				panic(err)
+			}
+
+			if evmHooks != nil && evmHooks.OnBalanceChange != nil && !weiBalance.IsZero() {
+				// Only if the corresponding EVM address exists that we tracer the EVM balance change
+				evmAddress := am.keeper.GetEVMAddressOrDefault(ctx, feeCollectorModuleAddress)
+				newBalance := am.keeper.BankKeeper().GetWeiBalance(ctx, feeCollectorModuleAddress).BigInt()
+				oldBalance := new(big.Int).Sub(newBalance, weiBalance.BigInt())
+
+				evmHooks.OnBalanceChange(evmAddress, oldBalance, newBalance, tracing.BalanceIncreaseRewardTransactionFee)
 			}
 		}
 		surplus = surplus.Add(deferredInfo.Surplus)
 	}
+
+	evmModuleAddress := am.keeper.AccountKeeper().GetModuleAddress(types.ModuleName)
 	surplusUsei, surplusWei := state.SplitUseiWeiAmount(surplus.BigInt())
 	if surplusUsei.GT(sdk.ZeroInt()) {
-		if err := am.keeper.BankKeeper().AddCoins(ctx, am.keeper.AccountKeeper().GetModuleAddress(types.ModuleName), sdk.NewCoins(sdk.NewCoin(am.keeper.GetBaseDenom(ctx), surplusUsei)), true); err != nil {
+		if err := am.keeper.BankKeeper().AddCoins(ctx, evmModuleAddress, sdk.NewCoins(sdk.NewCoin(am.keeper.GetBaseDenom(ctx), surplusUsei)), true); err != nil {
 			ctx.Logger().Error("failed to send usei surplus of %s to EVM module account", surplusUsei)
 		}
 	}
 	if surplusWei.GT(sdk.ZeroInt()) {
-		if err := am.keeper.BankKeeper().AddWei(ctx, am.keeper.AccountKeeper().GetModuleAddress(types.ModuleName), surplusWei); err != nil {
+		if err := am.keeper.BankKeeper().AddWei(ctx, evmModuleAddress, surplusWei); err != nil {
 			ctx.Logger().Error("failed to send wei surplus of %s to EVM module account", surplusWei)
+		} else {
+			if evmHooks != nil && evmHooks.OnBalanceChange != nil {
+				// Only if the corresponding EVM address exists that we tracer the EVM balance change
+				evmAddress := am.keeper.GetEVMAddressOrDefault(ctx, evmModuleAddress)
+				newBalance := am.keeper.BankKeeper().GetWeiBalance(ctx, evmModuleAddress).BigInt()
+				oldBalance := new(big.Int).Sub(newBalance, surplusWei.BigInt())
+
+				evmHooks.OnBalanceChange(evmAddress, oldBalance, newBalance, tracing.BalanceIncreaseRewardMineBlock)
+			}
 		}
 	}
 	am.keeper.SetTxHashesOnHeight(ctx, ctx.BlockHeight(), utils.Map(evmTxDeferredInfoList, func(i keeper.EvmTxDeferredInfo) common.Hash { return i.TxHash }))
