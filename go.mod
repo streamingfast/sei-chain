@@ -349,7 +349,7 @@ replace (
 	github.com/cosmos/cosmos-sdk => github.com/sei-protocol/sei-cosmos v0.2.76-seiv2
 	github.com/cosmos/iavl => github.com/sei-protocol/sei-iavl v0.1.9
 	github.com/cosmos/ibc-go/v3 => github.com/sei-protocol/sei-ibc-go/v3 v3.3.0
-	github.com/ethereum/go-ethereum => github.com/streamingfast/go-ethereum v1.13.6-0.20240318203337-9beae74e5023
+	github.com/ethereum/go-ethereum => github.com/sei-protocol/go-ethereum v1.13.5-sei-9.0.20240319142823-6587b723590a
 	github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 	github.com/sei-protocol/sei-db => github.com/sei-protocol/sei-db v0.0.33
 	// Latest goleveldb is broken, we have to stick to this version
