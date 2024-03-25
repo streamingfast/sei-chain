@@ -6,14 +6,18 @@ import (
 )
 
 func (s *DBImpl) GetCodeHash(addr common.Address) common.Hash {
+	s.k.PrepareReplayedAddr(s.ctx, addr)
 	return s.k.GetCodeHash(s.ctx, addr)
 }
 
 func (s *DBImpl) GetCode(addr common.Address) []byte {
+	s.k.PrepareReplayedAddr(s.ctx, addr)
 	return s.k.GetCode(s.ctx, addr)
 }
 
 func (s *DBImpl) SetCode(addr common.Address, code []byte) {
+	s.k.PrepareReplayedAddr(s.ctx, addr)
+
 	if s.logger != nil && s.logger.OnCodeChange != nil {
 		// The SetCode method could be modified to return the old code/hash directly.
 		oldCode := s.GetCode(addr)
@@ -26,5 +30,6 @@ func (s *DBImpl) SetCode(addr common.Address, code []byte) {
 }
 
 func (s *DBImpl) GetCodeSize(addr common.Address) int {
+	s.k.PrepareReplayedAddr(s.ctx, addr)
 	return s.k.GetCodeSize(s.ctx, addr)
 }

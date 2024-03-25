@@ -10,6 +10,7 @@ import (
 )
 
 func (s *DBImpl) SubBalance(evmAddr common.Address, amt *big.Int, reason tracing.BalanceChangeReason) {
+	s.k.PrepareReplayedAddr(s.ctx, evmAddr)
 	if amt.Sign() == 0 {
 		return
 	}
@@ -41,6 +42,7 @@ func (s *DBImpl) SubBalance(evmAddr common.Address, amt *big.Int, reason tracing
 }
 
 func (s *DBImpl) AddBalance(evmAddr common.Address, amt *big.Int, reason tracing.BalanceChangeReason) {
+	s.k.PrepareReplayedAddr(s.ctx, evmAddr)
 	if amt.Sign() == 0 {
 		return
 	}
@@ -72,6 +74,7 @@ func (s *DBImpl) AddBalance(evmAddr common.Address, amt *big.Int, reason tracing
 }
 
 func (s *DBImpl) GetBalance(evmAddr common.Address) *big.Int {
+	s.k.PrepareReplayedAddr(s.ctx, evmAddr)
 	usei := s.k.BankKeeper().GetBalance(s.ctx, s.getSeiAddress(evmAddr), s.k.GetBaseDenom(s.ctx)).Amount
 	wei := s.k.BankKeeper().GetWeiBalance(s.ctx, s.getSeiAddress(evmAddr))
 	return usei.Mul(sdk.NewIntFromBigInt(UseiToSweiMultiplier)).Add(wei).BigInt()

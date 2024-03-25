@@ -5,6 +5,7 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
 )
@@ -27,13 +28,15 @@ func (k *Keeper) SetCode(ctx sdk.Context, addr common.Address, code []byte) {
 	k.PrefixStore(ctx, types.CodeSizeKeyPrefix).Set(addr[:], length)
 	h := crypto.Keccak256Hash(code)
 	k.PrefixStore(ctx, types.CodeHashKeyPrefix).Set(addr[:], h[:])
+	// set association with direct cast Sei address for the contract address
+	k.SetAddressMapping(ctx, k.GetSeiAddressOrDefault(ctx, addr), addr)
 }
 
 func (k *Keeper) GetCodeHash(ctx sdk.Context, addr common.Address) common.Hash {
 	store := k.PrefixStore(ctx, types.CodeHashKeyPrefix)
 	bz := store.Get(addr[:])
 	if bz == nil {
-		return common.Hash{}
+		return ethtypes.EmptyCodeHash
 	}
 	return common.BytesToHash(bz)
 }

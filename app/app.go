@@ -17,7 +17,8 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethhexutil "github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
-
+	"github.com/ethereum/go-ethereum/ethclient"
+	ethrpc "github.com/ethereum/go-ethereum/rpc"
 	"github.com/sei-protocol/sei-chain/app/antedecorators"
 	"github.com/sei-protocol/sei-chain/evmrpc"
 	"github.com/sei-protocol/sei-chain/precompiles"
@@ -125,6 +126,7 @@ import (
 	"github.com/sei-protocol/sei-chain/x/evm"
 	evmante "github.com/sei-protocol/sei-chain/x/evm/ante"
 	evmkeeper "github.com/sei-protocol/sei-chain/x/evm/keeper"
+	"github.com/sei-protocol/sei-chain/x/evm/replay"
 	evmtracers "github.com/sei-protocol/sei-chain/x/evm/tracers"
 	"github.com/sei-protocol/sei-chain/x/evm/tracing"
 	evmtypes "github.com/sei-protocol/sei-chain/x/evm/types"
@@ -594,6 +596,18 @@ func New(
 	app.evmRPCConfig, err = evmrpc.ReadConfig(appOpts)
 	if err != nil {
 		panic(fmt.Sprintf("error reading EVM config due to %s", err))
+	}
+	ethReplayConfig, err := replay.ReadConfig(appOpts)
+	if err != nil {
+		panic(fmt.Sprintf("error reading eth replay config due to %s", err))
+	}
+	app.EvmKeeper.EthReplayConfig = ethReplayConfig
+	if ethReplayConfig.Enabled {
+		rpcclient, err := ethrpc.Dial(ethReplayConfig.EthRPC)
+		if err != nil {
+			panic(fmt.Sprintf("error dialing %s due to %s", ethReplayConfig.EthRPC, err))
+		}
+		app.EvmKeeper.EthClient = ethclient.NewClient(rpcclient)
 	}
 
 	if app.evmRPCConfig.LiveEVMTracer != "" {
@@ -1499,7 +1513,7 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 	events = append(events, beginBlockResp.Events...)
 
 	txResults = make([]*abci.ExecTxResult, len(txs))
-	typedTxs := []sdk.Tx{}
+	typedTxs := app.DecodeTransactionsConcurrently(ctx, txs)
 
 	if app.evmTracer != nil {
 		header := ctx.BlockHeader()
@@ -1509,24 +1523,6 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 		}()
 	}
 
-	for i, tx := range txs {
-		typedTx, err := app.txDecoder(tx)
-		// get txkey from tx
-		if err != nil {
-			ctx.Logger().Error(fmt.Sprintf("error decoding transaction at index %d due to %s", i, err))
-			typedTxs = append(typedTxs, nil)
-		} else {
-			if isEVM, _ := evmante.IsEVMMessage(typedTx); isEVM {
-				msg := evmtypes.MustGetEVMTransactionMessage(typedTx)
-				if err := evmante.Preprocess(ctx, msg); err != nil {
-					ctx.Logger().Error(fmt.Sprintf("error preprocessing EVM tx due to %s", err))
-					typedTxs = append(typedTxs, nil)
-					continue
-				}
-			}
-			typedTxs = append(typedTxs, typedTx)
-		}
-	}
 	prioritizedTxs, otherTxs, prioritizedTypedTxs, otherTypedTxs, prioritizedIndices, otherIndices := app.PartitionPrioritizedTxs(ctx, txs, typedTxs)
 
 	// run the prioritized txs
@@ -1560,6 +1556,35 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 	return events, txResults, endBlockResp, nil
 }
 
+func (app *App) DecodeTransactionsConcurrently(ctx sdk.Context, txs [][]byte) []sdk.Tx {
+	typedTxs := make([]sdk.Tx, len(txs))
+	wg := sync.WaitGroup{}
+	for i, tx := range txs {
+		wg.Add(1)
+		go func(idx int, encodedTx []byte) {
+			defer wg.Done()
+			typedTx, err := app.txDecoder(encodedTx)
+			// get txkey from tx
+			if err != nil {
+				ctx.Logger().Error(fmt.Sprintf("error decoding transaction at index %d due to %s", idx, err))
+				typedTxs[idx] = nil
+			} else {
+				if isEVM, _ := evmante.IsEVMMessage(typedTx); isEVM {
+					msg := evmtypes.MustGetEVMTransactionMessage(typedTx)
+					if err := evmante.Preprocess(ctx, msg); err != nil {
+						ctx.Logger().Error(fmt.Sprintf("error preprocessing EVM tx due to %s", err))
+						typedTxs[idx] = nil
+						return
+					}
+				}
+				typedTxs[idx] = typedTx
+			}
+		}(i, tx)
+	}
+	wg.Wait()
+	return typedTxs
+}
+
 func (app *App) addBadWasmDependenciesToContext(ctx sdk.Context, txResults []*abci.ExecTxResult) sdk.Context {
 	wasmContractsWithIncorrectDependencies := []sdk.AccAddress{}
 	for _, txResult := range txResults {
@@ -1583,6 +1608,9 @@ func (app *App) addBadWasmDependenciesToContext(ctx sdk.Context, txResults []*ab
 }
 
 func (app *App) getFinalizeBlockResponse(appHash []byte, events []abci.Event, txResults []*abci.ExecTxResult, endBlockResp abci.ResponseEndBlock) abci.ResponseFinalizeBlock {
+	if app.EvmKeeper.EthReplayConfig.Enabled {
+		return abci.ResponseFinalizeBlock{}
+	}
 	return abci.ResponseFinalizeBlock{
 		Events:    events,
 		TxResults: txResults,
