@@ -114,6 +114,11 @@ func newSeiFirehoseTracer(tracerURL *url.URL) (*seitracing.Hooks, error) {
 		OnSeiBlockEnd:       tracer.OnBlockEnd,
 
 		GetTxTracer: func(txIndex int) sdk.TxTracer {
+			tracer.blockReorderOrdinalOnce.Do(func() {
+				tracer.blockReorderOrdinal = true
+				tracer.blockReorderOrdinalSnapshot = tracer.blockOrdinal.value
+			})
+
 			// Created first so we can get the pointer id everywhere
 			isolatedTracer := &TxTracerHooks{}
 			isolatedTracerID := fmt.Sprintf("%03d-%p", txIndex, isolatedTracer)
@@ -182,12 +187,14 @@ type Firehose struct {
 	applyBackwardCompatibility *bool
 
 	// Block state
-	block                *pbeth.Block
-	blockBaseFee         *big.Int
-	blockOrdinal         *Ordinal
-	blockFinality        *FinalityStatus
-	blockRules           params.Rules
-	blockReorderOrdinals bool
+	block                       *pbeth.Block
+	blockBaseFee                *big.Int
+	blockOrdinal                *Ordinal
+	blockFinality               *FinalityStatus
+	blockRules                  params.Rules
+	blockReorderOrdinal         bool
+	blockReorderOrdinalSnapshot uint64
+	blockReorderOrdinalOnce     sync.Once
 
 	// Transaction state
 	evm                    *tracing.VMContext
@@ -217,8 +224,9 @@ func NewFirehose(config *FirehoseConfig) *Firehose {
 		applyBackwardCompatibility: config.ApplyBackwardCompatibility,
 
 		// Block state
-		blockOrdinal:  &Ordinal{},
-		blockFinality: &FinalityStatus{},
+		blockOrdinal:        &Ordinal{},
+		blockFinality:       &FinalityStatus{},
+		blockReorderOrdinal: false,
 
 		// Transaction state
 		transactionLogIndex: 0,
@@ -268,6 +276,9 @@ func (f *Firehose) resetBlock() {
 	f.blockFinality.Reset()
 	f.blockIsPrecompiledAddr = nil
 	f.blockRules = params.Rules{}
+	f.blockReorderOrdinal = false
+	f.blockReorderOrdinalSnapshot = 0
+	f.blockReorderOrdinalOnce = sync.Once{}
 }
 
 // resetTransaction resets the transaction state and the call state in one shot
@@ -398,6 +409,10 @@ func (f *Firehose) OnBlockEnd(err error) {
 	firehoseInfo("block ending (err=%s)", errorView(err))
 
 	if err == nil {
+		if f.blockReorderOrdinal {
+			f.reorderIsolatedTransactionsAndOrdinals()
+		}
+
 		f.ensureInBlockAndNotInTrx()
 		f.printBlockToFirehose(f.block, f.blockFinality)
 	} else {
@@ -409,6 +424,93 @@ func (f *Firehose) OnBlockEnd(err error) {
 	f.resetTransaction()
 
 	firehoseInfo("block end")
+}
+
+// reorderIsolatedTransactionsAndOrdinals is called right after all transactions have completed execution. It will sort transactions
+// according to their index.
+//
+// But most importantly, will re-assign all the ordinals of each transaction recursively. When the parallel execution happened,
+// all ordinal were made relative to the transaction they were contained in. But now, we are going to re-assign them to the
+// global block ordinal by getting the current ordinal and ad it to the transaction ordinal and so forth.
+func (f *Firehose) reorderIsolatedTransactionsAndOrdinals() {
+	if !f.blockReorderOrdinal {
+		firehoseInfo("post process isolated transactions skipped (block_reorder_ordinals=false)")
+		return
+	}
+
+	ordinalBase := f.blockReorderOrdinalSnapshot
+	firehoseInfo("post processing isolated transactions sorting & re-assigning ordinals (ordinal_base=%d)", ordinalBase)
+
+	slices.SortStableFunc(f.block.TransactionTraces, func(i, j *pbeth.TransactionTrace) int {
+		return int(i.Index) - int(j.Index)
+	})
+
+	baseline := ordinalBase
+	for _, trx := range f.block.TransactionTraces {
+		trx.BeginOrdinal += baseline
+		for _, call := range trx.Calls {
+			f.reorderCallOrdinals(call, baseline)
+		}
+
+		for _, log := range trx.Receipt.Logs {
+			log.Ordinal += baseline
+		}
+
+		trx.EndOrdinal += baseline
+		baseline = trx.EndOrdinal
+	}
+
+	for _, ch := range f.block.BalanceChanges {
+		if ch.Ordinal >= ordinalBase {
+			ch.Ordinal += baseline
+		}
+	}
+	for _, ch := range f.block.CodeChanges {
+		if ch.Ordinal >= ordinalBase {
+			ch.Ordinal += baseline
+		}
+	}
+	for _, call := range f.block.SystemCalls {
+		if call.BeginOrdinal >= ordinalBase {
+			f.reorderCallOrdinals(call, baseline)
+		}
+	}
+}
+
+func (f *Firehose) reorderCallOrdinals(call *pbeth.Call, ordinalBase uint64) (ordinalEnd uint64) {
+	if *f.applyBackwardCompatibility {
+		if call.BeginOrdinal != 0 {
+			call.BeginOrdinal += ordinalBase // consistent with a known small bug: root call has beginOrdinal set to 0
+		}
+	} else {
+		call.BeginOrdinal += ordinalBase
+	}
+
+	for _, log := range call.Logs {
+		log.Ordinal += ordinalBase
+	}
+	for _, act := range call.AccountCreations {
+		act.Ordinal += ordinalBase
+	}
+	for _, ch := range call.BalanceChanges {
+		ch.Ordinal += ordinalBase
+	}
+	for _, ch := range call.GasChanges {
+		ch.Ordinal += ordinalBase
+	}
+	for _, ch := range call.NonceChanges {
+		ch.Ordinal += ordinalBase
+	}
+	for _, ch := range call.StorageChanges {
+		ch.Ordinal += ordinalBase
+	}
+	for _, ch := range call.CodeChanges {
+		ch.Ordinal += ordinalBase
+	}
+
+	call.EndOrdinal += ordinalBase
+
+	return call.EndOrdinal
 }
 
 func (f *Firehose) OnBeaconBlockRootStart(root common.Hash) {
@@ -1689,6 +1791,12 @@ type Ordinal struct {
 // Reset resets the ordinal to zero.
 func (o *Ordinal) Reset() {
 	o.value = 0
+}
+
+// Peek gives you the current ordinal value which is actually the last assigned
+// value attributed, the next value that is going to be used is `Peek() + 1`.
+func (o *Ordinal) Peek() (out uint64) {
+	return o.value
 }
 
 // Next gives you the next sequential ordinal value that you should
