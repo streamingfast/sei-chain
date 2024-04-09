@@ -69,7 +69,7 @@ func newFirehoseTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 		}
 	}
 
-	return newTracingHooksFromFirehose(NewFirehose()), nil
+	return newTracingHooksFromFirehose(NewFirehose(&config)), nil
 }
 
 func newTracingHooksFromFirehose(tracer *Firehose) *tracing.Hooks {
@@ -97,7 +97,13 @@ func newTracingHooksFromFirehose(tracer *Firehose) *tracing.Hooks {
 }
 
 func newSeiFirehoseTracer(tracerURL *url.URL) (*seitracing.Hooks, error) {
-	tracer := NewFirehose()
+	tracerConfig, err := new(FirehoseConfig).fromURLParameters(tracerURL.Query())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Firehose config: %w", err)
+	}
+
+	tracer := NewFirehose(tracerConfig)
+
 	commitLock := new(sync.Mutex)
 
 	return &seitracing.Hooks{
@@ -141,7 +147,20 @@ func newSeiFirehoseTracer(tracerURL *url.URL) (*seitracing.Hooks, error) {
 }
 
 type FirehoseConfig struct {
-	// Nothing for now
+	ApplyBackwardCompatibility *bool `json:"applyBackwardCompatibility"`
+}
+
+func (c *FirehoseConfig) fromURLParameters(query url.Values) (*FirehoseConfig, error) {
+	if v := query.Get("applyBackwardCompatibility"); v != "" {
+		applyBackwardCompatibility, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid applyBackwardCompatibility value: %w", err)
+		}
+
+		c.ApplyBackwardCompatibility = &applyBackwardCompatibility
+	}
+
+	return c, nil
 }
 
 type Firehose struct {
@@ -152,6 +171,15 @@ type Firehose struct {
 	hasher       crypto.KeccakState // Keccak256 hasher instance shared across tracer needs (non-concurrent safe)
 	hasherBuf    common.Hash        // Keccak256 hasher result array shared across tracer needs (non-concurrent safe)
 	tracerID     string
+	// The FirehoseTracer is used in multiple chains, some for which were produced using a legacy version
+	// of the whole tracing infrastructure. This legacy version had many small bugs here and there that
+	// we must "reproduce" on some chain to ensure that the FirehoseTracer produces the same output
+	// as the legacy version.
+	//
+	// This value is fed from the tracer configuration. If explicitly set, the value set will be used
+	// here. If not set in the config, then we inspect `OnBlockchainInit` the chain config to determine
+	// if it's a network for which we must reproduce the legacy bugs.
+	applyBackwardCompatibility *bool
 
 	// Block state
 	block                *pbeth.Block
@@ -178,14 +206,15 @@ type Firehose struct {
 
 const FirehoseProtocolVersion = "3.0"
 
-func NewFirehose() *Firehose {
+func NewFirehose(config *FirehoseConfig) *Firehose {
 	return &Firehose{
 		// Global state
-		outputBuffer: bytes.NewBuffer(make([]byte, 0, 100*1024*1024)),
-		initSent:     new(atomic.Bool),
-		chainConfig:  nil,
-		hasher:       crypto.NewKeccakState(),
-		tracerID:     "global",
+		outputBuffer:               bytes.NewBuffer(make([]byte, 0, 100*1024*1024)),
+		initSent:                   new(atomic.Bool),
+		chainConfig:                nil,
+		hasher:                     crypto.NewKeccakState(),
+		tracerID:                   "global",
+		applyBackwardCompatibility: config.ApplyBackwardCompatibility,
 
 		// Block state
 		blockOrdinal:  &Ordinal{},
@@ -262,6 +291,20 @@ func (f *Firehose) OnBlockchainInit(chainConfig *params.ChainConfig) {
 	} else {
 		f.panicInvalidState("The OnBlockchainInit callback was called more than once", 0)
 	}
+
+	if f.applyBackwardCompatibility == nil {
+		f.applyBackwardCompatibility = ptr(chainNeedsLegacyBackwardCompatibility(chainConfig.ChainID))
+	}
+}
+
+var mainnetChainID = big.NewInt(1)
+var polygonMainnetChainID = big.NewInt(137)
+var polygonMumbaiChainID = big.NewInt(80001)
+var bscMainnetChainID = big.NewInt(56)
+var bscTestnetChainID = big.NewInt(97)
+
+func chainNeedsLegacyBackwardCompatibility(id *big.Int) bool {
+	return id.Cmp(mainnetChainID) == 0 || id.Cmp(polygonMainnetChainID) == 0 || id.Cmp(polygonMumbaiChainID) == 0 || id.Cmp(bscMainnetChainID) == 0 || id.Cmp(bscTestnetChainID) == 0
 }
 
 func (f *Firehose) OnSeiBlockStart(hash []byte, size uint64, b *types.Header) {
@@ -299,8 +342,11 @@ func (f *Firehose) OnBlockStart(event tracing.BlockEvent) {
 		Number: b.Number().Uint64(),
 		Header: newBlockHeaderFromChainHeader(b.Header(), firehoseBigIntFromNative(new(big.Int).Add(event.TD, b.Difficulty()))),
 		Size:   b.Size(),
-		// Known Firehose issue: If you fix all known Firehose issue for a new chain, don't forget to bump `Ver` to `4`!
-		Ver: 3,
+		Ver:    4,
+	}
+
+	if *f.applyBackwardCompatibility {
+		f.block.Ver = 3
 	}
 
 	for _, uncle := range b.Uncles() {
@@ -316,13 +362,13 @@ func (f *Firehose) OnBlockStart(event tracing.BlockEvent) {
 }
 
 func (f *Firehose) OnSkippedBlock(event tracing.BlockEvent) {
-	// Blocks that are skipped from blockchain that were knwon and should contain 0 transactions.
+	// Blocks that are skipped from blockchain that were known and should contain 0 transactions.
 	// It happened in the past, on Polygon if I recall right, that we missed block because some block
 	// went in this code path.
 	//
 	// See https: //github.com/streamingfast/go-ethereum/blob/a46903cf0cad829479ded66b369017914bf82314/core/blockchain.go#L1797-L1814
 	if event.Block.Transactions().Len() > 0 {
-		panic(fmt.Sprintf("The tracer received an `OnSkippedBlock` block #%d (%s) with transactions (%d), this according to core/blockchain.go should never happen and is an error",
+		panic(fmt.Sprintf("The tracer received an `OnSkippedBlock` block #%d (%s) with %d transactions, this according to core/blockchain.go should never happen and is an error",
 			event.Block.NumberU64(),
 			event.Block.Hash().Hex(),
 			event.Block.Transactions().Len(),
@@ -492,8 +538,12 @@ func (f *Firehose) completeTransaction(receipt *types.Receipt) *pbeth.Transactio
 	f.removeLogBlockIndexOnStateRevertedCalls()
 	f.assignOrdinalAndIndexToReceiptLogs()
 
-	// Known Firehose issue: This field has never been populated in the old Firehose instrumentation, so it's the same thing for now
-	// f.transaction.ReturnData = rootCall.ReturnData
+	if *f.applyBackwardCompatibility {
+		// Known Firehose issue: This field has never been populated in the old Firehose instrumentation
+	} else {
+		f.transaction.ReturnData = rootCall.ReturnData
+	}
+
 	f.transaction.EndOrdinal = f.blockOrdinal.Next()
 
 	return f.transaction
@@ -642,6 +692,8 @@ func (f *Firehose) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing.
 		//
 		// The gas change recording in the previous Firehose patch was done before calling `OnKeccakPreimage` so
 		// we must do the same here.
+		//
+		// No need to wrap in apply backward compatibility, the old behavior is fine in all cases.
 		if cost > 0 {
 			if reason, found := opCodeToGasChangeReasonMap[opCode]; found {
 				activeCall.GasChanges = append(activeCall.GasChanges, f.newGasChange("state", gas, gas-cost, reason))
@@ -670,17 +722,18 @@ func (f *Firehose) onOpcodeKeccak256(call *pbeth.Call, stack []uint256.Int, memo
 	f.hasher.Write(preImage)
 	f.hasher.Read(f.hasherBuf[:])
 
-	// Known Firehose issue: It appears the old Firehose instrumentation have a bug
-	// where when the keccak256 preimage is empty, it is written as "." which is
-	// completely wrong.
-	//
-	// To keep the same behavior, we will write the preimage as a "." when the encoded
-	// data is an empty string.
-	//
-	// For new chain, this code should be remove so that we just keep `hex.EncodeToString(data)`.
 	encodedData := hex.EncodeToString(preImage)
-	if encodedData == "" {
-		encodedData = "."
+
+	if *f.applyBackwardCompatibility {
+		// Known Firehose issue: It appears the old Firehose instrumentation have a bug
+		// where when the keccak256 preimage is empty, it is written as "." which is
+		// completely wrong.
+		//
+		// To keep the same behavior, we will write the preimage as a "." when the encoded
+		// data is an empty string.
+		if encodedData == "" {
+			encodedData = "."
+		}
 	}
 
 	call.KeccakPreimages[hex.EncodeToString(f.hasherBuf[:])] = encodedData
@@ -717,11 +770,15 @@ func (f *Firehose) OnOpcodeFault(pc uint64, op byte, gas, cost uint64, scope tra
 func (f *Firehose) captureInterpreterStep(activeCall *pbeth.Call, pc uint64, op vm.OpCode, gas, cost uint64, _ tracing.OpContext, rData []byte, depth int, err error) {
 	_, _, _, _, _, _, _ = pc, op, gas, cost, rData, depth, err
 
-	// for call, we need to process the executed code here
-	// since in old firehose executed code calculation depends if the code exist
-	if activeCall.CallType == pbeth.CallType_CALL && !activeCall.ExecutedCode {
-		firehoseTrace("Intepreter step for callType_CALL")
-		activeCall.ExecutedCode = len(activeCall.Input) > 0
+	if *f.applyBackwardCompatibility {
+		// for call, we need to process the executed code here
+		// since in old firehose executed code calculation depends if the code exist
+		if activeCall.CallType == pbeth.CallType_CALL && !activeCall.ExecutedCode {
+			firehoseTrace("Intepreter step for callType_CALL")
+			activeCall.ExecutedCode = len(activeCall.Input) > 0
+		}
+	} else {
+		activeCall.ExecutedCode = true
 	}
 }
 
@@ -729,20 +786,16 @@ func (f *Firehose) callStart(source string, callType pbeth.CallType, from common
 	firehoseDebug("call start (source=%s index=%d type=%s input=%s)", source, f.callStack.NextIndex(), callType, inputView(input))
 	f.ensureInBlockAndInTrx()
 
-	// Known Firehose issue: Contract creation call's input is always `nil` in old Firehose patch
-	// due to an oversight that having it in `CodeChange` would be sufficient but this is wrong
-	// as constructor's input are not part of the code change but part of the call input.
-	//
-	// New chain integration should remove this `if` statement completely.
-	if callType == pbeth.CallType_CREATE {
-		input = nil
+	if *f.applyBackwardCompatibility {
+		// Known Firehose issue: Contract creation call's input is always `nil` in old Firehose patch
+		// due to an oversight that having it in `CodeChange` would be sufficient but this is wrong
+		// as constructor's input are not part of the code change but part of the call input.
+		if callType == pbeth.CallType_CREATE {
+			input = nil
+		}
 	}
 
 	call := &pbeth.Call{
-		// Known Firehose issue: Ref 042a2ff03fd623f151d7726314b8aad6 (see below)
-		//
-		// New chain integration should uncomment the code below and remove the `if` statement of the the other ref
-		// BeginOrdinal: f.blockOrdinal.Next(),
 		CallType: callType,
 		Depth:    0,
 		Caller:   from.Bytes(),
@@ -753,16 +806,19 @@ func (f *Firehose) callStart(source string, callType pbeth.CallType, from common
 		GasLimit: gas,
 	}
 
-	call.ExecutedCode = f.getExecutedCode(f.evm, call)
+	if *f.applyBackwardCompatibility {
+		// Known Firehose issue: The BeginOrdinal of the genesis block root call is never actually
+		// incremented and it's always 0.
+		//
+		// Ref 042a2ff03fd623f151d7726314b8aad6
 
-	// Known Firehose issue: The BeginOrdinal of the genesis block root call is never actually
-	// incremented and it's always 0.
-	//
-	// New chain integration should remove this `if` statement and uncomment code of other ref
-	// above.
-	//
-	// Ref 042a2ff03fd623f151d7726314b8aad6
-	if f.block.Number != 0 {
+		call.BeginOrdinal = 0
+		call.ExecutedCode = f.getExecutedCode(f.evm, call)
+
+		if f.block.Number != 0 {
+			call.BeginOrdinal = f.blockOrdinal.Next()
+		}
+	} else {
 		call.BeginOrdinal = f.blockOrdinal.Next()
 	}
 
@@ -770,17 +826,40 @@ func (f *Firehose) callStart(source string, callType pbeth.CallType, from common
 		panic(err)
 	}
 
-	// Known Firehose issue: The `BeginOrdinal` of the root call is incremented but must
-	// be assigned back to 0 because of a bug in the console reader. remove on new chain.
-	//
-	// New chain integration should remove this `if` statement
-	if source == "root" {
-		call.BeginOrdinal = 0
+	if *f.applyBackwardCompatibility {
+		// Known Firehose issue: The `BeginOrdinal` of the root call is incremented but must
+		// be assigned back to 0 because of a bug in the console reader. remove on new chain.
+		//
+		// New chain integration should remove this `if` statement
+		if source == "root" {
+			call.BeginOrdinal = 0
+		}
 	}
 
 	f.callStack.Push(call)
 }
 
+// Known Firehose issue: How we computed `executed_code` before was not working for contract's that only
+// deal with ETH transfer through Solidity `receive()` built-in since those call have `len(input) == 0`
+//
+// Older comment keeping for future review:
+//
+// For precompiled address however, interpreter does not run so determine  there was a bug in Firehose instrumentation where we would
+//
+//	if call.ExecutedCode || (f.isPrecompiledAddr != nil && f.isPrecompiledAddr(common.BytesToAddress(call.Address))) {
+//		// In this case, we are sure that some code executed. This translates in the old Firehose instrumentation
+//		// that it would have **never** emitted an `account_without_code`.
+//		//
+//		// When no `account_without_code` was executed in the previous Firehose instrumentation,
+//		// the `call.ExecutedCode` defaulted to the condition below
+//		call.ExecutedCode = call.CallType != pbeth.CallType_CREATE && len(call.Input) > 0
+//	} else {
+//
+//		// In all other cases, we are sure that no code executed. This translates in the old Firehose instrumentation
+//		// that it would have emitted an `account_without_code` and it would have then forced set the `call.ExecutedCode`
+//		// to `false`.
+//		call.ExecutedCode = false
+//	}
 func (f *Firehose) getExecutedCode(evm *tracing.VMContext, call *pbeth.Call) bool {
 	precompile := f.blockIsPrecompiledAddr(common.BytesToAddress(call.Address))
 
@@ -832,37 +911,6 @@ func (f *Firehose) callEnd(source string, output []byte, gasUsed uint64, err err
 		call.ReturnData = bytes.Clone(output)
 	}
 
-	// Known Firehose issue: How we computed `executed_code` before was not working for contract's that only
-	// deal with ETH transfer through Solidity `receive()` built-in since those call have `len(input) == 0`
-	//
-	// New chain should turn the logic into:
-	//
-	//     if !call.ExecutedCode && f.isPrecompiledAddr(common.BytesToAddress(call.Address)) {
-	//         call.ExecutedCode = true
-	//     }
-	//
-	// At this point, `call.ExecutedCode` is tied to `EVMInterpreter#Run` execution (in `core/vm/interpreter.go`)
-	// and is `true` if the run/loop of the interpreter executed.
-	//
-	// This means that if `false` the interpreter did not run at all and we would had emitted a
-	// `account_without_code` event in the old Firehose patch which you have set `call.ExecutecCode`
-	// to false
-	//
-	// For precompiled address however, interpreter does not run so determine  there was a bug in Firehose instrumentation where we would
-	// if call.ExecutedCode || (f.isPrecompiledAddr != nil && f.isPrecompiledAddr(common.BytesToAddress(call.Address))) {
-	// 	// In this case, we are sure that some code executed. This translates in the old Firehose instrumentation
-	// 	// that it would have **never** emitted an `account_without_code`.
-	// 	//
-	// 	// When no `account_without_code` was executed in the previous Firehose instrumentation,
-	// 	// the `call.ExecutedCode` defaulted to the condition below
-	// 	call.ExecutedCode = call.CallType != pbeth.CallType_CREATE && len(call.Input) > 0
-	// } else {
-	// 	// In all other cases, we are sure that no code executed. This translates in the old Firehose instrumentation
-	// 	// that it would have emitted an `account_without_code` and it would have then forced set the `call.ExecutedCode`
-	// 	// to `false`.
-	// 	call.ExecutedCode = false
-	// }
-
 	if reverted {
 		failureReason := ""
 		if err != nil {
@@ -876,21 +924,21 @@ func (f *Firehose) callEnd(source string, output []byte, gasUsed uint64, err err
 		// because they do not cost any gas.
 		call.StatusReverted = errors.Is(err, vm.ErrExecutionReverted) || errors.Is(err, vm.ErrInsufficientBalance) || errors.Is(err, vm.ErrDepth)
 
-		// Known Firehose issue: FIXME Document!
-		if !call.ExecutedCode && (errors.Is(err, vm.ErrInsufficientBalance) || errors.Is(err, vm.ErrDepth)) {
-			call.ExecutedCode = call.CallType != pbeth.CallType_CREATE && len(call.Input) > 0
+		if *f.applyBackwardCompatibility {
+			// Known Firehose issue: FIXME Document!
+			if !call.ExecutedCode && (errors.Is(err, vm.ErrInsufficientBalance) || errors.Is(err, vm.ErrDepth)) {
+				call.ExecutedCode = call.CallType != pbeth.CallType_CREATE && len(call.Input) > 0
+			}
 		}
 	}
 
-	// Known Firehose issue: The EndOrdinal of the genesis block root call is never actually
-	// incremented and it's always 0.
-	//
-	// New chain should turn the logic into:
-	//
-	//     call.EndOrdinal = f.blockOrdinal.Next()
-	//
-	// Removing the condition around the `EndOrdinal` assignment (keeping it!)
-	if f.block.Number != 0 {
+	if *f.applyBackwardCompatibility {
+		// Known Firehose issue: The EndOrdinal of the genesis block root call is never actually
+		// incremented and it's always 0.
+		if f.block.Number != 0 {
+			call.EndOrdinal = f.blockOrdinal.Next()
+		}
+	} else {
 		call.EndOrdinal = f.blockOrdinal.Next()
 	}
 
@@ -961,13 +1009,13 @@ func (f *Firehose) OnBalanceChange(a common.Address, prev, new *big.Int, reason 
 		return
 	}
 
-	// Known Firehose issue: It's possible to burn Ether by sending some ether to a suicided account. In those case,
-	// at theend of block producing, StateDB finalize the block by burning ether from the account. This is something
-	// we were not tracking in the old Firehose instrumentation.
-	//
-	// New chain integration should remove this `if` statement all along.
-	if reason == tracing.BalanceDecreaseSelfdestructBurn {
-		return
+	if *f.applyBackwardCompatibility {
+		// Known Firehose issue: It's possible to burn Ether by sending some ether to a suicided account. In those case,
+		// at theend of block producing, StateDB finalize the block by burning ether from the account. This is something
+		// we were not tracking in the old Firehose instrumentation.
+		if reason == tracing.BalanceDecreaseSelfdestructBurn {
+			return
+		}
 	}
 
 	f.ensureInBlockOrTrx()
@@ -1097,18 +1145,18 @@ func (f *Firehose) OnGasChange(old, new uint64, reason tracing.GasChangeReason) 
 		return
 	}
 
-	// Known Firehose issue: New geth native tracer added more gas change, some that we were indeed missing and
-	// should have included in our previous patch.
-	//
-	// For new chain, this code should be remove so that they are included and useful to user.
-	//
-	// Ref eb1916a67d9bea03df16a7a3e2cfac72
-	if reason == tracing.GasChangeTxInitialBalance ||
-		reason == tracing.GasChangeTxRefunds ||
-		reason == tracing.GasChangeTxLeftOverReturned ||
-		reason == tracing.GasChangeCallInitialBalance ||
-		reason == tracing.GasChangeCallLeftOverReturned {
-		return
+	if *f.applyBackwardCompatibility {
+		// Known Firehose issue: New geth native tracer added more gas change, some that we were indeed missing and
+		// should have included in our previous patch.
+		//
+		// Ref eb1916a67d9bea03df16a7a3e2cfac72
+		if reason == tracing.GasChangeTxInitialBalance ||
+			reason == tracing.GasChangeTxRefunds ||
+			reason == tracing.GasChangeTxLeftOverReturned ||
+			reason == tracing.GasChangeCallInitialBalance ||
+			reason == tracing.GasChangeCallLeftOverReturned {
+			return
+		}
 	}
 
 	activeCall := f.callStack.Peek()
@@ -1525,23 +1573,11 @@ func balanceChangeReasonFromChain(reason tracing.BalanceChangeReason) pbeth.Bala
 }
 
 var gasChangeReasonToPb = map[tracing.GasChangeReason]pbeth.GasChange_Reason{
-	// Known Firehose issue: Those are new gas change trace that we were missing initially in our old
-	// Firehose patch. See Known Firehose issue referenced eb1916a67d9bea03df16a7a3e2cfac72 for details
-	// search for the id within this project to find back all links).
-	//
-	// New chain should uncomment the code below and remove the same assigments to UNKNOWN
-	//
-	// tracing.GasChangeTxInitialBalance:     pbeth.GasChange_REASON_TX_INITIAL_BALANCE,
-	// tracing.GasChangeTxRefunds:            pbeth.GasChange_REASON_TX_REFUNDS,
-	// tracing.GasChangeTxLeftOverReturned:   pbeth.GasChange_REASON_TX_LEFT_OVER_RETURNED,
-	// tracing.GasChangeCallInitialBalance:   pbeth.GasChange_REASON_CALL_INITIAL_BALANCE,
-	// tracing.GasChangeCallLeftOverReturned: pbeth.GasChange_REASON_CALL_LEFT_OVER_RETURNED,
-	tracing.GasChangeTxInitialBalance:     pbeth.GasChange_REASON_UNKNOWN,
-	tracing.GasChangeTxRefunds:            pbeth.GasChange_REASON_UNKNOWN,
-	tracing.GasChangeTxLeftOverReturned:   pbeth.GasChange_REASON_UNKNOWN,
-	tracing.GasChangeCallInitialBalance:   pbeth.GasChange_REASON_UNKNOWN,
-	tracing.GasChangeCallLeftOverReturned: pbeth.GasChange_REASON_UNKNOWN,
-
+	tracing.GasChangeTxInitialBalance:        pbeth.GasChange_REASON_TX_INITIAL_BALANCE,
+	tracing.GasChangeTxRefunds:               pbeth.GasChange_REASON_TX_REFUNDS,
+	tracing.GasChangeTxLeftOverReturned:      pbeth.GasChange_REASON_TX_LEFT_OVER_RETURNED,
+	tracing.GasChangeCallInitialBalance:      pbeth.GasChange_REASON_CALL_INITIAL_BALANCE,
+	tracing.GasChangeCallLeftOverReturned:    pbeth.GasChange_REASON_CALL_LEFT_OVER_RETURNED,
 	tracing.GasChangeTxIntrinsicGas:          pbeth.GasChange_REASON_INTRINSIC_GAS,
 	tracing.GasChangeCallContractCreation:    pbeth.GasChange_REASON_CONTRACT_CREATION,
 	tracing.GasChangeCallContractCreation2:   pbeth.GasChange_REASON_CONTRACT_CREATION2,
