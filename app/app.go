@@ -125,6 +125,7 @@ import (
 
 	"github.com/sei-protocol/sei-chain/x/evm"
 	evmante "github.com/sei-protocol/sei-chain/x/evm/ante"
+	"github.com/sei-protocol/sei-chain/x/evm/blocktest"
 	evmkeeper "github.com/sei-protocol/sei-chain/x/evm/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/replay"
 	evmtracers "github.com/sei-protocol/sei-chain/x/evm/tracers"
@@ -592,7 +593,9 @@ func New(
 		wasmOpts...,
 	)
 
-	app.EvmKeeper = *evmkeeper.NewKeeper(keys[evmtypes.StoreKey], memKeys[evmtypes.MemStoreKey], app.GetSubspace(evmtypes.ModuleName), app.BankKeeper, &app.AccountKeeper, &app.StakingKeeper)
+	app.EvmKeeper = *evmkeeper.NewKeeper(keys[evmtypes.StoreKey], memKeys[evmtypes.MemStoreKey],
+		app.GetSubspace(evmtypes.ModuleName), app.BankKeeper, &app.AccountKeeper, &app.StakingKeeper,
+		app.TransferKeeper)
 	app.evmRPCConfig, err = evmrpc.ReadConfig(appOpts)
 	if err != nil {
 		panic(fmt.Sprintf("error reading EVM config due to %s", err))
@@ -602,6 +605,11 @@ func New(
 		panic(fmt.Sprintf("error reading eth replay config due to %s", err))
 	}
 	app.EvmKeeper.EthReplayConfig = ethReplayConfig
+	ethBlockTestConfig, err := blocktest.ReadConfig(appOpts)
+	if err != nil {
+		panic(fmt.Sprintf("error reading eth block test config due to %s", err))
+	}
+	app.EvmKeeper.EthBlockTestConfig = ethBlockTestConfig
 	if ethReplayConfig.Enabled {
 		rpcclient, err := ethrpc.Dial(ethReplayConfig.EthRPC)
 		if err != nil {
@@ -617,7 +625,7 @@ func New(
 		//                 so another solution would be to call this one later when EVM chainID is known. Last resort, we have a sync.Once
 		//                 that we can use to call it only once.
 		chainConfig := evmtypes.DefaultChainConfig().EthereumConfig(big.NewInt(int64(app.evmRPCConfig.LiveEVMTracerChainID)))
-		evmTracer, err := evmtracers.NewBlockchainLogger(evmtracers.GlobalLiveTracerRegistry, app.evmRPCConfig.LiveEVMTracer, chainConfig)
+		evmTracer, err := evmtracers.NewBlockchainTracer(evmtracers.GlobalLiveTracerRegistry, app.evmRPCConfig.LiveEVMTracer, chainConfig)
 		if err != nil {
 			panic(fmt.Sprintf("error creating EVM tracer due to %s", err))
 		}
@@ -678,6 +686,8 @@ func New(
 			stakingkeeper.NewMsgServerImpl(app.StakingKeeper),
 			app.GovKeeper,
 			app.DistrKeeper,
+			app.OracleKeeper,
+			app.TransferKeeper,
 		); err != nil {
 			panic(err)
 		}
@@ -1441,6 +1451,9 @@ func (app *App) ProcessTXsWithOCC(ctx sdk.Context, txs [][]byte, typedTxs []sdk.
 
 	execResults := make([]*abci.ExecTxResult, 0, len(batchResult.Results))
 	for _, r := range batchResult.Results {
+		metrics.IncrTxProcessTypeCounter(metrics.OCC_CONCURRENT)
+		metrics.IncrGasCounter("gas_used", r.Response.GasUsed)
+		metrics.IncrGasCounter("gas_wanted", r.Response.GasWanted)
 		execResults = append(execResults, &abci.ExecTxResult{
 			Code:      r.Response.Code,
 			Data:      r.Response.Data,
@@ -1484,7 +1497,7 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 	ctx = ctx.WithContext(goCtx)
 
 	if app.evmTracer != nil {
-		ctx = evmtracers.SetCtxBlockchainLogger(ctx, app.evmTracer)
+		ctx = evmtracers.SetCtxBlockchainTracer(ctx, app.evmTracer)
 	}
 
 	events = []abci.Event{}
@@ -1608,7 +1621,7 @@ func (app *App) addBadWasmDependenciesToContext(ctx sdk.Context, txResults []*ab
 }
 
 func (app *App) getFinalizeBlockResponse(appHash []byte, events []abci.Event, txResults []*abci.ExecTxResult, endBlockResp abci.ResponseEndBlock) abci.ResponseFinalizeBlock {
-	if app.EvmKeeper.EthReplayConfig.Enabled {
+	if app.EvmKeeper.EthReplayConfig.Enabled || app.EvmKeeper.EthBlockTestConfig.Enabled {
 		return abci.ResponseFinalizeBlock{}
 	}
 	return abci.ResponseFinalizeBlock{
@@ -1738,7 +1751,7 @@ func (app *App) RegisterTendermintService(clientCtx client.Context) {
 		}
 		ctx, err := app.CreateQueryContext(i, false)
 		if err != nil {
-			app.Logger().Error("failed to create query context for EVM; using latest context instead")
+			app.Logger().Error(fmt.Sprintf("failed to create query context for EVM; using latest context instead: %v+", err.Error()))
 			return app.GetCheckCtx()
 		}
 		return ctx

@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/tests"
 	"github.com/gorilla/mux"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/spf13/cobra"
@@ -178,7 +179,19 @@ func (am AppModule) BeginBlock(sdk.Context, abci.RequestBeginBlock) {
 // returns no validator updates.
 func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.ValidatorUpdate {
 	var coinbase sdk.AccAddress
-	if am.keeper.EthReplayConfig.Enabled {
+	if am.keeper.EthBlockTestConfig.Enabled {
+		blocks := am.keeper.BlockTest.Json.Blocks
+		var block *tests.BtBlock
+		for i, b := range blocks {
+			if b.BlockHeader.Number.Uint64() == uint64(ctx.BlockHeight()) {
+				block = &blocks[i]
+			}
+		}
+		if block == nil {
+			panic(fmt.Sprintf("block not found at height %d", ctx.BlockHeight()))
+		}
+		coinbase = am.keeper.GetSeiAddressOrDefault(ctx, block.BlockHeader.Coinbase)
+	} else if am.keeper.EthReplayConfig.Enabled {
 		block, err := am.keeper.EthClient.BlockByNumber(ctx.Context(), big.NewInt(ctx.BlockHeight()+am.keeper.GetReplayInitialHeight(ctx)))
 		if err != nil {
 			panic(fmt.Sprintf("error getting block at height %d", ctx.BlockHeight()+am.keeper.GetReplayInitialHeight(ctx)))
@@ -190,9 +203,8 @@ func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.Val
 	}
 	evmTxDeferredInfoList := am.keeper.GetEVMTxDeferredInfo(ctx)
 	evmHooks := tracers.GetCtxEthTracingHooks(ctx)
-
 	denom := am.keeper.GetBaseDenom(ctx)
-	surplus := sdk.NewInt(0)
+	surplus := utils.Sdk0
 	for _, deferredInfo := range evmTxDeferredInfoList {
 		idx := deferredInfo.TxIndx
 		coinbaseAddress := state.GetCoinbaseAddress(idx)
@@ -202,7 +214,6 @@ func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.Val
 			if err := am.keeper.BankKeeper().SendCoinsAndWei(ctx, coinbaseAddress, coinbase, balance.Amount, weiBalance); err != nil {
 				panic(err)
 			}
-
 			if evmHooks != nil && evmHooks.OnBalanceChange != nil && !weiBalance.IsZero() {
 				// Only if the corresponding EVM address exists that we tracer the EVM balance change
 				evmAddress := am.keeper.GetEVMAddressOrDefault(ctx, coinbaseAddress)
@@ -214,15 +225,14 @@ func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.Val
 		}
 		surplus = surplus.Add(deferredInfo.Surplus)
 	}
-
-	evmModuleAddress := am.keeper.AccountKeeper().GetModuleAddress(types.ModuleName)
 	surplusUsei, surplusWei := state.SplitUseiWeiAmount(surplus.BigInt())
 	if surplusUsei.GT(sdk.ZeroInt()) {
+		evmModuleAddress := am.keeper.AccountKeeper().GetModuleAddress(types.ModuleName)
+
 		if err := am.keeper.BankKeeper().AddCoins(ctx, evmModuleAddress, sdk.NewCoins(sdk.NewCoin(am.keeper.GetBaseDenom(ctx), surplusUsei)), true); err != nil {
 			ctx.Logger().Error("failed to send usei surplus of %s to EVM module account", surplusUsei)
 		}
-	}
-	if surplusWei.GT(sdk.ZeroInt()) {
+
 		if err := am.keeper.BankKeeper().AddWei(ctx, evmModuleAddress, surplusWei); err != nil {
 			ctx.Logger().Error("failed to send wei surplus of %s to EVM module account", surplusWei)
 		} else {

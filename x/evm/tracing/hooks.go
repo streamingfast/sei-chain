@@ -1,6 +1,7 @@
 package tracing
 
 import (
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -33,9 +34,9 @@ type (
 )
 
 // Hooks is used to collect traces during chain processing. It's a similar
-// interface as the go-ethereum's `tracing.Hooks` but adapted to Sei particularities.
+// interface as the go-ethereum's [tracing.Hooks] but adapted to Sei particularities.
 //
-// The method all starts with OnSei... to avoid confusion with the go-ethereum's `core.BlockchainLogger`
+// The method all starts with OnSei... to avoid confusion with the go-ethereum's [tracing.Hooks]
 // interface and allow one to implement both interfaces in the same struct.
 type Hooks struct {
 	*tracing.Hooks
@@ -43,4 +44,18 @@ type Hooks struct {
 	OnSeiBlockchainInit OnSeiBlockchainInitHook
 	OnSeiBlockStart     OnSeiBlockStartHook
 	OnSeiBlockEnd       OnSeiBlockEnd
+
+	GetTxTracer func(txIndex int) sdk.TxTracer
+}
+
+var _ sdk.TxTracer = (*Hooks)(nil)
+
+func (h *Hooks) InjectInContext(ctx sdk.Context) sdk.Context {
+	return ctx
+}
+
+func (h *Hooks) Reset() {
+}
+
+func (h *Hooks) Commit() {
 }

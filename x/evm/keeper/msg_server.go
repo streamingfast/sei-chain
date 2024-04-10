@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"runtime/debug"
 
 	"github.com/armon/go-metrics"
 	"github.com/cosmos/cosmos-sdk/telemetry"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	bankkeeper "github.com/cosmos/cosmos-sdk/x/bank/keeper"
+	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core"
@@ -60,7 +63,7 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 		return
 	}
 
-	logger := evmtracers.GetCtxBlockchainLogger(ctx)
+	logger := evmtracers.GetCtxEthTracingHooks(ctx)
 	if logger != nil && logger.OnTxStart != nil {
 		logger.OnTxStart(evmInstance.GetVMContext(), tx, emsg.From)
 	}
@@ -68,6 +71,8 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 	var transitionRes *core.ExecutionResult
 	defer func() {
 		if pe := recover(); pe != nil {
+			// there is not supposed to be any panic
+			debug.PrintStack()
 			ctx.Logger().Error(fmt.Sprintf("EVM PANIC: %s", pe))
 			telemetry.IncrCounter(1, types.ModuleName, "panics")
 
@@ -100,7 +105,6 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 			)
 			return
 		}
-
 		receipt, err := server.writeReceipt(ctx, msg, tx, emsg, serverRes, stateDB)
 		if err != nil {
 			ctx.Logger().Error(fmt.Sprintf("failed to write EVM receipt: %s", err))
@@ -264,6 +268,20 @@ func (server msgServer) writeReceipt(ctx sdk.Context, origMsg *types.MsgEVMTrans
 	receipt.From = origMsg.Derived.SenderEVMAddr.Hex()
 
 	return receipt, server.SetReceipt(ctx, tx.Hash(), receipt)
+}
+
+func (server msgServer) Send(goCtx context.Context, msg *types.MsgSend) (*types.MsgSendResponse, error) {
+	ctx := sdk.UnwrapSDKContext(goCtx)
+	recipient := server.GetSeiAddressOrDefault(ctx, common.HexToAddress(msg.ToAddress))
+	_, err := bankkeeper.NewMsgServerImpl(server.BankKeeper()).Send(goCtx, &banktypes.MsgSend{
+		FromAddress: msg.FromAddress,
+		ToAddress:   recipient.String(),
+		Amount:      msg.Amount,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgSendResponse{}, nil
 }
 
 func (server msgServer) getEthReceipt(ctx sdk.Context, tx *ethtypes.Transaction, msg *core.Message, response *types.MsgEVMTransactionResponse, stateDB *state.DBImpl) *ethtypes.Receipt {

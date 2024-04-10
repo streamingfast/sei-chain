@@ -84,10 +84,10 @@ func (o *opts) Get(k string) interface{} {
 		return o.denyList
 	}
 	if k == "evm.live_evm_tracer" {
-		return o.slow
+		return o.liveEVMTracer
 	}
 	if k == "evm.live_evm_tracer_chain_id" {
-		return o.slow
+		return o.liveEVMTracerChainID
 	}
 	panic(fmt.Errorf("unknown key: %s", k))
 }

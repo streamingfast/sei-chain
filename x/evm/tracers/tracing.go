@@ -11,12 +11,12 @@ import (
 	"github.com/sei-protocol/sei-chain/x/evm/tracing"
 )
 
-// BlockchainLoggerFactory is a function that creates a new BlockchainLogger.
+// BlockchainTracerFactory is a function that creates a new [BlockchainTracer].
 // It's going to received the parsed URL from the `live-evm-tracer` flag.
 //
 // The scheme of the URL is going to be used to determine which tracer to use
 // by the registry.
-type BlockchainLoggerFactory = func(tracerURL *url.URL) (*tracing.Hooks, error)
+type BlockchainTracerFactory = func(tracerURL *url.URL) (*tracing.Hooks, error)
 
 // PR_REVIEW_NOTE: I defined the tracer identifier to be either a plain string or an URL of the form <tracer_id>://<tracer_specific_data>,
 //
@@ -24,7 +24,7 @@ type BlockchainLoggerFactory = func(tracerURL *url.URL) (*tracing.Hooks, error)
 //	of our project and found it's a pretty good way to configure "generic" dependency.
 //
 //	We could switch to plain string if you prefer.
-func NewBlockchainLogger(registry LiveTracerRegistry, tracerIdentifier string, chainConfig *params.ChainConfig) (*tracing.Hooks, error) {
+func NewBlockchainTracer(registry LiveTracerRegistry, tracerIdentifier string, chainConfig *params.ChainConfig) (*tracing.Hooks, error) {
 	tracerURL, err := url.Parse(tracerIdentifier)
 	if err != nil {
 		return nil, fmt.Errorf("tracer value %q should have been a valid URL: %w", tracerIdentifier, err)
@@ -57,18 +57,18 @@ func NewBlockchainLogger(registry LiveTracerRegistry, tracerIdentifier string, c
 	return tracer, nil
 }
 
-type CtxBlockchainLoggerKeyType string
+type CtxBlockchainTracerKeyType string
 
-const CtxBlockchainLoggerKey = CtxBlockchainLoggerKeyType("evm_and_state_logger")
+const CtxBlockchainTracerKey = CtxBlockchainTracerKeyType("evm_and_state_logger")
 
-func SetCtxBlockchainLogger(ctx sdk.Context, logger *tracing.Hooks) sdk.Context {
-	return ctx.WithContext(context.WithValue(ctx.Context(), CtxBlockchainLoggerKey, logger))
+func SetCtxBlockchainTracer(ctx sdk.Context, logger *tracing.Hooks) sdk.Context {
+	return ctx.WithContext(context.WithValue(ctx.Context(), CtxBlockchainTracerKey, logger))
 }
 
-// GetCtxBlockchainLogger function to get the SEI specific [tracing.Hooks] struct
+// GetCtxBlockchainTracer function to get the SEI specific [tracing.Hooks] struct
 // used to trace EVM blocks and transactions.
-func GetCtxBlockchainLogger(ctx sdk.Context) *tracing.Hooks {
-	rawVal := ctx.Context().Value(CtxBlockchainLoggerKey)
+func GetCtxBlockchainTracer(ctx sdk.Context) *tracing.Hooks {
+	rawVal := ctx.Context().Value(CtxBlockchainTracerKey)
 	if rawVal == nil {
 		return nil
 	}
@@ -83,9 +83,34 @@ func GetCtxBlockchainLogger(ctx sdk.Context) *tracing.Hooks {
 // avoiding nil pointer exceptions when trying to send the tracer to lower-level go-ethereum components
 // that deals with *tracing.Hooks directly.
 func GetCtxEthTracingHooks(ctx sdk.Context) *ethtracing.Hooks {
-	if logger := GetCtxBlockchainLogger(ctx); logger != nil {
+	if logger := GetCtxBlockchainTracer(ctx); logger != nil {
 		return logger.Hooks
 	}
 
 	return nil
+}
+
+var _ sdk.TxTracer = (*TxTracerHooks)(nil)
+
+type TxTracerHooks struct {
+	Hooks *tracing.Hooks
+
+	OnTxReset  func()
+	OnTxCommit func()
+}
+
+func (h TxTracerHooks) InjectInContext(ctx sdk.Context) sdk.Context {
+	return SetCtxBlockchainTracer(ctx, h.Hooks)
+}
+
+func (h TxTracerHooks) Reset() {
+	if h.OnTxReset != nil {
+		h.OnTxReset()
+	}
+}
+
+func (h TxTracerHooks) Commit() {
+	if h.OnTxCommit != nil {
+		h.OnTxCommit()
+	}
 }

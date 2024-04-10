@@ -111,5 +111,16 @@ fi
 
 ~/go/bin/seid config keyring-backend test
 
+fund() {
+  echo "Initializing chain..."
+  sleep 3 # Wait for chain to be ready instead...
+  ~/go/bin/seid tx evm send 0xF87A299e6bC7bEba58dbBe5a5Aa21d49bCD16D52 100000000000000000 --from admin
+}
+
+sd 'occ-enabled =.*' 'occ-enabled = true' "$APP_PATH"
+sd '\[evm\]' "[evm]\nlive_evm_tracer = \"firehose\"\nlive_evm_tracer_chain_id = 713715" "$APP_PATH"
+
+fund &
+
 # start the chain with log tracing
-GORACE="log_path=/tmp/race/seid_race" ~/go/bin/seid start --trace --chain-id sei-chain
+GORACE="log_path=/tmp/race/seid_race" ~/go/bin/seid start --trace --chain-id sei-chain --log_level warn

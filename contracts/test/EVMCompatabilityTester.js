@@ -167,10 +167,27 @@ describe("EVM Test", function () {
 
 
     describe("Block Properties", function () {
-      it("Should get and print the block properties", async function () {
-        await delay()
-        const blockProperties = await evmTester.getBlockProperties();
-        debug(blockProperties)
+      it("Should have consistent block properties for a block", async function () {
+        const currentBlockNumber = await ethers.provider.getBlockNumber();
+        const iface = new ethers.Interface(["function getBlockProperties() view returns (bytes32 blockHash, address coinbase, uint256 prevrandao, uint256 gaslimit, uint256 number, uint256 timestamp)"]);
+        const addr = await evmTester.getAddress()
+        const tx = {
+          to: addr,
+          data: iface.encodeFunctionData("getBlockProperties", []),
+          blockTag: currentBlockNumber-2
+        };
+        const result = await ethers.provider.call(tx);
+
+        // wait for block to change
+        while(true){
+          const bn = await ethers.provider.getBlockNumber();
+          if(bn !== currentBlockNumber){
+                break
+          }
+          await sleep(100)
+        }
+        const result2 = await ethers.provider.call(tx);
+        expect(result).to.equal(result2)
       });
     });
 
@@ -215,6 +232,41 @@ describe("EVM Test", function () {
 
         // Verify that addr is set correctly
         expect(await evmTester.uint256Var()).to.equal(12345);
+      });
+
+      it("Should trace a call with timestamp", async function () {
+        await delay()
+        const txResponse = await evmTester.setTimestamp();
+        const receipt = await txResponse.wait();  // Wait for the transaction to be mined
+
+        // get the timestamp that was saved off during setTimestamp()
+        const lastTimestamp = await evmTester.lastTimestamp();
+
+        // perform two trace calls with a small delay in between
+        const trace1 = await hre.network.provider.request({
+          method: "debug_traceTransaction",
+          params: [receipt.hash],
+        });
+        await sleep(500)
+        const trace2 = await hre.network.provider.request({
+          method: "debug_traceTransaction",
+          params: [receipt.hash],
+        });
+
+        // expect consistency in the trace calls (timestamp should be fixed to block)
+        expect(JSON.stringify(trace1)).to.equal(JSON.stringify(trace2))
+
+        // expect timestamp in the actual trace to match the timestamp seen at the time of invocation
+        let found = false
+        for(let log of trace1.structLogs) {
+          if(log.op === "SSTORE" && log.stack.length >= 3) {
+            const ts = log.stack[2]
+            expect(ts).to.equal(lastTimestamp)
+            found = true
+            break;
+          }
+        }
+        expect(found).to.be.true;
       });
 
 
@@ -291,7 +343,7 @@ describe("EVM Test", function () {
     })
 
     describe("Historical query test", function() {
-      it.only("Should be able to get historical block data", async function() {
+      it("Should be able to get historical block data", async function() {
         const feeData = await ethers.provider.getFeeData();
         const gasPrice = Number(feeData.gasPrice);
         const zero = ethers.parseUnits('0', 'ether')
@@ -704,7 +756,7 @@ describe("EVM Test", function () {
               fromBlock: blockStart,
               toBlock: blockEnd,
             };
-          
+
             const logs = await ethers.provider.getLogs(filter);
             expect(logs).to.be.an('array');
             expect(logs.length).to.equal(numTxs);
@@ -716,7 +768,7 @@ describe("EVM Test", function () {
               toBlock: blockEnd,
               topics: [ethers.id("DummyEvent(string,bool,address,uint256,bytes)")]
             };
-          
+
             const logs = await ethers.provider.getLogs(filter);
             expect(logs).to.be.an('array');
             expect(logs.length).to.equal(numTxs);
@@ -729,7 +781,7 @@ describe("EVM Test", function () {
               toBlock: blockEnd,
               topics: [ethers.id("DummyEvent(string,bool,address,uint256,bytes)")]
             };
-          
+
             const logs = await ethers.provider.getLogs(filter);
             const blockHash = logs[0].blockHash;
 
@@ -757,9 +809,9 @@ describe("EVM Test", function () {
                 paddedOwnerAddr,
               ]
             };
-          
+
             const logs = await ethers.provider.getLogs(filter1);
-          
+
             expect(logs).to.be.an('array');
             expect(logs.length).to.equal(numTxs);
 
@@ -775,7 +827,7 @@ describe("EVM Test", function () {
             };
 
             const logs2 = await ethers.provider.getLogs(filter1);
-          
+
             expect(logs2).to.be.an('array');
             expect(logs2.length).to.equal(numTxs);
           });
@@ -791,7 +843,7 @@ describe("EVM Test", function () {
                 "0x0000000000000000000000000000000000000000000000000000000000000003",
               ]
             };
-          
+
             const logs1 = await ethers.provider.getLogs(filter1);
             expect(logs1).to.be.an('array');
             expect(logs1.length).to.equal(1);
@@ -838,7 +890,7 @@ describe("EVM Test", function () {
                 ethers.id("nonexistent event string"),
               ]
             };
-          
+
             const logs = await ethers.provider.getLogs(filter);
             expect(logs).to.be.an('array');
             expect(logs.length).to.equal(0);
@@ -944,7 +996,7 @@ describe("EVM Test", function () {
           value: usei,
         });
         await txResponse.wait();  // Wait for the transaction to be mined
-      
+
         // Check that the contract received the ETH
         const contractBalance = await ethers.provider.getBalance(evmAddr);
         expect(contractBalance - initialBalance).to.equal(usei);

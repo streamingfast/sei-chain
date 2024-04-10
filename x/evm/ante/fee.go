@@ -1,12 +1,12 @@
 package ante
 
 import (
-	"math"
 	"math/big"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
+	"github.com/sei-protocol/sei-chain/utils"
 	"github.com/sei-protocol/sei-chain/x/evm/derived"
 	evmkeeper "github.com/sei-protocol/sei-chain/x/evm/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
@@ -25,8 +25,7 @@ func NewEVMFeeCheckDecorator(evmKeeper *evmkeeper.Keeper) *EVMFeeCheckDecorator 
 }
 
 func (fc EVMFeeCheckDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simulate bool, next sdk.AnteHandler) (sdk.Context, error) {
-	// only check fee in CheckTx (similar to normal Sei tx)
-	if !ctx.IsCheckTx() || simulate {
+	if simulate {
 		return next(ctx, tx, simulate)
 	}
 
@@ -83,10 +82,10 @@ func (fc EVMFeeCheckDecorator) getMinimumFee(ctx sdk.Context) *big.Int {
 
 // CalculatePriority returns a priority based on the effective gas price of the transaction
 func (fc EVMFeeCheckDecorator) CalculatePriority(ctx sdk.Context, txData ethtx.TxData) *big.Int {
-	gp := txData.EffectiveGasPrice(big.NewInt(0))
+	gp := txData.EffectiveGasPrice(utils.Big0)
 	priority := new(big.Int).Quo(gp, fc.evmKeeper.GetPriorityNormalizer(ctx).RoundInt().BigInt())
-	if priority.Cmp(big.NewInt(math.MaxInt64)) > 0 {
-		priority = big.NewInt(math.MaxInt64)
+	if priority.Cmp(utils.BigMaxI64) > 0 {
+		priority = utils.BigMaxI64
 	}
 	return priority
 }

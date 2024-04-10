@@ -17,6 +17,7 @@ import (
 	bankkeeper "github.com/cosmos/cosmos-sdk/x/bank/keeper"
 	paramtypes "github.com/cosmos/cosmos-sdk/x/params/types"
 	stakingkeeper "github.com/cosmos/cosmos-sdk/x/staking/keeper"
+	ibctransferkeeper "github.com/cosmos/ibc-go/v3/modules/apps/transfer/keeper"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
@@ -25,9 +26,12 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/tests"
 	abci "github.com/tendermint/tendermint/abci/types"
 	tmtypes "github.com/tendermint/tendermint/types"
 
+	"github.com/sei-protocol/sei-chain/utils"
+	"github.com/sei-protocol/sei-chain/x/evm/blocktest"
 	"github.com/sei-protocol/sei-chain/x/evm/replay"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
@@ -41,9 +45,10 @@ type Keeper struct {
 	deferredInfo *sync.Map
 	txResults    []*abci.ExecTxResult
 
-	bankKeeper    bankkeeper.Keeper
-	accountKeeper *authkeeper.AccountKeeper
-	stakingKeeper *stakingkeeper.Keeper
+	bankKeeper     bankkeeper.Keeper
+	accountKeeper  *authkeeper.AccountKeeper
+	stakingKeeper  *stakingkeeper.Keeper
+	transferKeeper ibctransferkeeper.Keeper
 
 	cachedFeeCollectorAddressMtx *sync.RWMutex
 	cachedFeeCollectorAddress    *common.Address
@@ -51,12 +56,19 @@ type Keeper struct {
 	pendingTxs                   map[string][]*PendingTx
 	keyToNonce                   map[tmtypes.TxKey]*AddressNoncePair
 
-	// only used during ETH replay. Not used in chain critical path
+	// only used during ETH replay. Not used in chain critical path.
 	EthClient       *ethclient.Client
 	EthReplayConfig replay.Config
-	Trie            ethstate.Trie
-	DB              ethstate.Database
-	Root            common.Hash
+
+	// only used during blocktest. Not used in chain critical path.
+	EthBlockTestConfig blocktest.Config
+	BlockTest          *tests.BlockTest
+
+	// used for both ETH replay and block tests. Not used in chain critical path.
+	Trie        ethstate.Trie
+	DB          ethstate.Database
+	Root        common.Hash
+	ReplayBlock *ethtypes.Block
 }
 
 type EvmTxDeferredInfo struct {
@@ -96,7 +108,8 @@ func (ctx *ReplayChainContext) GetHeader(hash common.Hash, number uint64) *ethty
 
 func NewKeeper(
 	storeKey sdk.StoreKey, memStoreKey sdk.StoreKey, paramstore paramtypes.Subspace,
-	bankKeeper bankkeeper.Keeper, accountKeeper *authkeeper.AccountKeeper, stakingKeeper *stakingkeeper.Keeper) *Keeper {
+	bankKeeper bankkeeper.Keeper, accountKeeper *authkeeper.AccountKeeper, stakingKeeper *stakingkeeper.Keeper,
+	transferKeeper ibctransferkeeper.Keeper) *Keeper {
 	if !paramstore.HasKeyTable() {
 		paramstore = paramstore.WithKeyTable(types.ParamKeyTable())
 	}
@@ -107,6 +120,7 @@ func NewKeeper(
 		bankKeeper:                   bankKeeper,
 		accountKeeper:                accountKeeper,
 		stakingKeeper:                stakingKeeper,
+		transferKeeper:               transferKeeper,
 		pendingTxs:                   make(map[string][]*PendingTx),
 		nonceMx:                      &sync.RWMutex{},
 		cachedFeeCollectorAddressMtx: &sync.RWMutex{},
@@ -141,6 +155,9 @@ func (k *Keeper) PurgePrefix(ctx sdk.Context, pref []byte) {
 }
 
 func (k *Keeper) GetVMBlockContext(ctx sdk.Context, gp core.GasPool) (*vm.BlockContext, error) {
+	if k.EthBlockTestConfig.Enabled {
+		return k.getBlockTestBlockCtx(ctx)
+	}
 	if k.EthReplayConfig.Enabled {
 		return k.getReplayBlockCtx(ctx)
 	}
@@ -161,7 +178,7 @@ func (k *Keeper) GetVMBlockContext(ctx sdk.Context, gp core.GasPool) (*vm.BlockC
 		GasLimit:    gp.Gas(),
 		BlockNumber: big.NewInt(ctx.BlockHeight()),
 		Time:        uint64(ctx.BlockHeader().Time.Unix()),
-		Difficulty:  big.NewInt(0),                               // only needed for PoW
+		Difficulty:  utils.Big0,                                  // only needed for PoW
 		BaseFee:     k.GetBaseFeePerGas(ctx).RoundInt().BigInt(), // feemarket not enabled
 		Random:      &rh,
 	}, nil
@@ -347,7 +364,7 @@ func (k *Keeper) GetKeysToNonces() map[tmtypes.TxKey]*AddressNoncePair {
 	return k.keyToNonce
 }
 
-// Only usd in ETH replay
+// Only used in ETH replay
 func (k *Keeper) PrepareReplayedAddr(ctx sdk.Context, addr common.Address) {
 	if !k.EthReplayConfig.Enabled {
 		return
@@ -362,7 +379,7 @@ func (k *Keeper) PrepareReplayedAddr(ctx sdk.Context, addr common.Address) {
 		return
 	}
 	store.Set(addr[:], a.Root[:])
-	if a.Balance != big.NewInt(0) {
+	if a.Balance != nil && a.Balance.Cmp(utils.Big0) != 0 {
 		usei, wei := state.SplitUseiWeiAmount(a.Balance)
 		err = k.BankKeeper().AddCoins(ctx, k.GetSeiAddressOrDefault(ctx, addr), sdk.NewCoins(sdk.NewCoin("usei", usei)), true)
 		if err != nil {
@@ -390,14 +407,14 @@ func (k *Keeper) PrepareReplayedAddr(ctx sdk.Context, addr common.Address) {
 }
 
 func (k *Keeper) GetBaseFee(ctx sdk.Context) *big.Int {
-	if !k.EthReplayConfig.Enabled {
-		return nil
+	if k.EthReplayConfig.Enabled {
+		return k.ReplayBlock.Header_.BaseFee
 	}
-	block, err := k.EthClient.BlockByNumber(ctx.Context(), big.NewInt(ctx.BlockHeight()+k.GetReplayInitialHeight(ctx)))
-	if err != nil {
-		panic(fmt.Sprintf("error getting block at height %d", ctx.BlockHeight()+k.GetReplayInitialHeight(ctx)))
+	if k.EthBlockTestConfig.Enabled {
+		block := k.BlockTest.Json.Blocks[ctx.BlockHeight()-1]
+		return block.BlockHeader.BaseFeePerGas
 	}
-	return block.Header_.BaseFee
+	return nil
 }
 
 func (k *Keeper) GetReplayedHeight(ctx sdk.Context) int64 {
@@ -432,12 +449,59 @@ func (k *Keeper) getInt64State(ctx sdk.Context, key []byte) int64 {
 	return int64(binary.BigEndian.Uint64(bz))
 }
 
-func (k *Keeper) getReplayBlockCtx(ctx sdk.Context) (*vm.BlockContext, error) {
-	block, err := k.EthClient.BlockByNumber(ctx.Context(), big.NewInt(ctx.BlockHeight()+k.GetReplayInitialHeight(ctx)))
-	if err != nil {
-		panic(fmt.Sprintf("error getting block at height %d", ctx.BlockHeight()+k.GetReplayInitialHeight(ctx)))
+func (k *Keeper) getBlockTestBlockCtx(ctx sdk.Context) (*vm.BlockContext, error) {
+	btBlock := k.BlockTest.Json.Blocks[ctx.BlockHeight()-1]
+	btHeader := btBlock.BlockHeader
+	header := &ethtypes.Header{
+		ParentHash:  btHeader.ParentHash,
+		UncleHash:   btHeader.UncleHash,
+		Coinbase:    btHeader.Coinbase,
+		Root:        btHeader.StateRoot,
+		TxHash:      btHeader.TransactionsTrie,
+		ReceiptHash: btHeader.ReceiptTrie,
+		Bloom:       btHeader.Bloom,
+		Difficulty:  btHeader.Difficulty,
+		Number:      new(big.Int).Set(btHeader.Number),
+		GasLimit:    btHeader.GasLimit,
+		GasUsed:     btHeader.GasUsed,
+		Time:        btHeader.Timestamp,
+		Extra:       btHeader.ExtraData,
+		MixDigest:   btHeader.MixHash,
+		Nonce:       btHeader.Nonce,
+		BaseFee:     btHeader.BaseFeePerGas,
 	}
-	header := block.Header_
+	getHash := core.GetHashFn(header, &ReplayChainContext{ethClient: k.EthClient})
+	var (
+		baseFee     *big.Int
+		blobBaseFee *big.Int
+		random      *common.Hash
+	)
+	if header.BaseFee != nil {
+		baseFee = new(big.Int).Set(header.BaseFee)
+	}
+	if header.ExcessBlobGas != nil {
+		blobBaseFee = eip4844.CalcBlobFee(*header.ExcessBlobGas)
+	}
+	if header.Difficulty.Cmp(common.Big0) == 0 {
+		random = &header.MixDigest
+	}
+	return &vm.BlockContext{
+		CanTransfer: core.CanTransfer,
+		Transfer:    core.Transfer,
+		GetHash:     getHash,
+		Coinbase:    header.Coinbase,
+		GasLimit:    header.GasLimit,
+		BlockNumber: new(big.Int).Set(header.Number),
+		Time:        header.Time,
+		Difficulty:  new(big.Int).Set(header.Difficulty),
+		BaseFee:     baseFee,
+		BlobBaseFee: blobBaseFee,
+		Random:      random,
+	}, nil
+}
+
+func (k *Keeper) getReplayBlockCtx(ctx sdk.Context) (*vm.BlockContext, error) {
+	header := k.ReplayBlock.Header_
 	getHash := core.GetHashFn(header, &ReplayChainContext{ethClient: k.EthClient})
 	var (
 		baseFee     *big.Int

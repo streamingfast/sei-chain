@@ -17,19 +17,19 @@ describe("EVM Test", function () {
             before(async function() {
                 contractAddress = readDeploymentOutput('erc20_deploy_addr.txt');
                 await sleep(1000);
-    
+
                 // Create a signer
                 [signer, signer2] = await ethers.getSigners();
                 owner = await signer.getAddress();
                 owner2 = await signer2.getAddress();
-    
+
                 const contractABIPath = path.join(__dirname, '../../precompiles/common/erc20_abi.json');
                 const contractABI = require(contractABIPath);
-    
+
                 // Get a contract instance
                 erc20 = new ethers.Contract(contractAddress, contractABI, signer);
             });
-    
+
             it("Transfer function", async function() {
                 const receiver = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
                 const beforeBalance = await erc20.balanceOf(owner);
@@ -63,13 +63,13 @@ describe("EVM Test", function () {
                 expect(approveReceipt.status).to.equal(1);
                 expect(await erc20.allowance(owner, owner2)).to.equal(100);
 
-                const erc20AsOwner2 = erc20.connect(signer2); 
+                const erc20AsOwner2 = erc20.connect(signer2);
 
-    
+
                 // transfer from owner to owner2
                 const balanceBefore = await erc20.balanceOf(receiver);
                 const transferFromTx = await erc20AsOwner2.transferFrom(owner, receiver, 100);
-    
+
                 // await sleep(3000);
                 const transferFromReceipt = await transferFromTx.wait();
                 expect(transferFromReceipt.status).to.equal(1);
@@ -77,17 +77,17 @@ describe("EVM Test", function () {
                 const diff = balanceAfter - balanceBefore;
                 expect(diff).to.equal(100);
             });
-    
+
             it("Balance of function", async function() {
                 const balance = await erc20.balanceOf(owner);
                 expect(balance).to.be.greaterThan(Number(0));
             });
-    
+
             it("Name function", async function () {
                 const name = await erc20.name()
                 expect(name).to.equal('UATOM');
             });
-    
+
             it("Symbol function", async function () {
                 const symbol = await erc20.symbol()
                 // expect symbol to be 'UATOM'
@@ -103,17 +103,17 @@ describe("EVM Test", function () {
             before(async function() {
                 govProposal = readDeploymentOutput('gov_proposal_output.txt');
                 await sleep(1000);
-    
+
                 // Create a proposal
                 const [signer, _] = await ethers.getSigners();
                 owner = await signer.getAddress();
-    
+
                 const contractABIPath = path.join(__dirname, '../../precompiles/gov/abi.json');
                 const contractABI = require(contractABIPath);
                 // Get a contract instance
                 gov = new ethers.Contract(GovPrecompileContract, contractABI, signer);
             });
-    
+
             it("Gov deposit", async function () {
                 const depositAmount = ethers.parseEther('0.01');
                 const deposit = await gov.deposit(govProposal, {
@@ -171,6 +171,50 @@ describe("EVM Test", function () {
                 const receipt = await delegate.wait();
                 expect(receipt.status).to.equal(1);
                 // TODO: Add staking query precompile here
+            });
+        });
+
+        describe("EVM Oracle Precompile Tester", function () {
+            const OraclePrecompileContract = '0x0000000000000000000000000000000000001008';
+            before(async function() {
+                const exchangeRatesContent = readDeploymentOutput('oracle_exchange_rates.json');
+                const twapsContent = readDeploymentOutput('oracle_twaps.json');
+
+                exchangeRatesJSON = JSON.parse(exchangeRatesContent).denom_oracle_exchange_rate_pairs;
+                twapsJSON = JSON.parse(twapsContent).oracle_twaps;
+
+                const [signer, _] = await ethers.getSigners();
+                owner = await signer.getAddress();
+
+                const contractABIPath = path.join(__dirname, '../../precompiles/oracle/abi.json');
+                const contractABI = require(contractABIPath);
+                // Get a contract instance
+                oracle = new ethers.Contract(OraclePrecompileContract, contractABI, signer);
+            });
+
+            it("Oracle Exchange Rates", async function () {
+                const exchangeRates = await oracle.getExchangeRates();
+                const exchangeRatesLen = exchangeRatesJSON.length;
+                expect(exchangeRates.length).to.equal(exchangeRatesLen);
+
+                for (let i = 0; i < exchangeRatesLen; i++) {
+                    expect(exchangeRates[i].denom).to.equal(exchangeRatesJSON[i].denom);
+                    expect(exchangeRates[i].oracleExchangeRateVal.exchangeRate).to.be.a('string').and.to.not.be.empty;
+                    expect(exchangeRates[i].oracleExchangeRateVal.exchangeRate).to.be.a('string').and.to.not.be.empty;
+                    expect(exchangeRates[i].oracleExchangeRateVal.lastUpdateTimestamp).to.exist.and.to.be.gt(0);
+                }
+            });
+
+            it("Oracle Twaps", async function () {
+                const twaps = await oracle.getOracleTwaps(3600);
+                const twapsLen = twapsJSON.length
+                expect(twaps.length).to.equal(twapsLen);
+
+                for (let i = 0; i < twapsLen; i++) {
+                    expect(twaps[i].denom).to.equal(twapsJSON[i].denom);
+                    expect(twaps[i].twap).to.be.a('string').and.to.not.be.empty;
+                    expect(twaps[i].lookbackSeconds).to.exist.and.to.be.gt(0);
+                }
             });
         });
     });
