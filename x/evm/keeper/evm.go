@@ -23,7 +23,11 @@ func (k *Keeper) HandleInternalEVMCall(ctx sdk.Context, req *types.MsgInternalEV
 		addr := common.HexToAddress(req.To)
 		to = &addr
 	}
-	ret, err := k.CallEVM(ctx, sdk.MustAccAddressFromBech32(req.Sender), to, req.Value, req.Data)
+	senderAddr, err := sdk.AccAddressFromBech32(req.Sender)
+	if err != nil {
+		return nil, err
+	}
+	ret, err := k.CallEVM(ctx, senderAddr, to, req.Value, req.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +44,11 @@ func (k *Keeper) HandleInternalEVMDelegateCall(ctx sdk.Context, req *types.MsgIn
 		to = &addr
 	}
 	zeroInt := sdk.ZeroInt()
-	ret, err := k.CallEVM(ctx, sdk.MustAccAddressFromBech32(req.Sender), to, &zeroInt, req.Data)
+	senderAddr, err := sdk.AccAddressFromBech32(req.Sender)
+	if err != nil {
+		return nil, err
+	}
+	ret, err := k.CallEVM(ctx, senderAddr, to, &zeroInt, req.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +60,6 @@ func (k *Keeper) CallEVM(ctx sdk.Context, from sdk.AccAddress, to *common.Addres
 	if err != nil {
 		return nil, err
 	}
-	var createdContractAddress common.Address
 	defer func() {
 		if finalizer != nil {
 			if err := finalizer(); err != nil {
@@ -60,16 +67,12 @@ func (k *Keeper) CallEVM(ctx sdk.Context, from sdk.AccAddress, to *common.Addres
 				return
 			}
 		}
-		if reterr == nil && to == nil {
-			k.AddToWhitelistIfApplicable(ctx, data, createdContractAddress)
-		}
 	}()
 	var f EVMCallFunc
 	if to == nil {
 		// contract creation
 		f = func(caller vm.ContractRef, _ *common.Address, input []byte, gas uint64, value *big.Int) ([]byte, uint64, error) {
-			ret, ca, leftoverGas, err := evm.Create(caller, input, gas, value)
-			createdContractAddress = ca
+			ret, _, leftoverGas, err := evm.Create(caller, input, gas, value)
 			return ret, leftoverGas, err
 		}
 	} else {
@@ -97,8 +100,8 @@ func (k *Keeper) callEVM(ctx sdk.Context, from sdk.AccAddress, to *common.Addres
 		// infinite gas meter (used in queries)
 		seiGasRemaining = math.MaxUint64
 	}
-	multiplier := k.GetPriorityNormalizer(ctx).RoundInt().BigInt()
-	evmGasRemaining := new(big.Int).Quo(new(big.Int).SetUint64(seiGasRemaining), multiplier)
+	multiplier := k.GetPriorityNormalizer(ctx)
+	evmGasRemaining := sdk.NewDecFromInt(sdk.NewIntFromUint64(seiGasRemaining)).Quo(multiplier).TruncateInt().BigInt()
 	if evmGasRemaining.Cmp(MaxUint64BigInt) > 0 {
 		evmGasRemaining = MaxUint64BigInt
 	}
@@ -107,7 +110,7 @@ func (k *Keeper) callEVM(ctx sdk.Context, from sdk.AccAddress, to *common.Addres
 		value = val.BigInt()
 	}
 	ret, leftoverGas, err := f(vm.AccountRef(sender), to, data, evmGasRemaining.Uint64(), value)
-	ctx.GasMeter().ConsumeGas(ctx.GasMeter().Limit()-new(big.Int).Mul(new(big.Int).SetUint64(leftoverGas), multiplier).Uint64(), "call EVM")
+	ctx.GasMeter().ConsumeGas(ctx.GasMeter().Limit()-sdk.NewDecFromInt(sdk.NewIntFromUint64(leftoverGas)).Mul(multiplier).TruncateInt().Uint64(), "call EVM")
 	if err != nil {
 		return nil, err
 	}

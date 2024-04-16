@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 
-	ethabi "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -35,6 +34,7 @@ import (
 	"github.com/sei-protocol/sei-chain/x/evm/artifacts/cw20"
 	"github.com/sei-protocol/sei-chain/x/evm/artifacts/cw721"
 	"github.com/sei-protocol/sei-chain/x/evm/artifacts/native"
+	"github.com/sei-protocol/sei-chain/x/evm/artifacts/wsei"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
 	"github.com/sei-protocol/sei-chain/x/evm/types/ethtx"
 )
@@ -42,6 +42,7 @@ import (
 const (
 	FlagGasFeeCap = "gas-fee-cap"
 	FlagGas       = "gas-limit"
+	FlagValue     = "value"
 	FlagRPC       = "evm-rpc"
 	FlagNonce     = "nonce"
 )
@@ -62,9 +63,13 @@ func GetTxCmd() *cobra.Command {
 	cmd.AddCommand(CmdDeployErcCw20())
 	cmd.AddCommand(CmdCallContract())
 	cmd.AddCommand(CmdDeployErcCw721())
+	cmd.AddCommand(CmdDeployWSEI())
 	cmd.AddCommand(CmdERC20Send())
 	cmd.AddCommand(CmdDelegate())
 	cmd.AddCommand(NativeSendTxCmd())
+	cmd.AddCommand(NewAddERCNativePointerProposalTxCmd())
+	cmd.AddCommand(NewAddERCCW20PointerProposalTxCmd())
+	cmd.AddCommand(NewAddERCCW721PointerProposalTxCmd())
 
 	return cmd
 }
@@ -239,17 +244,11 @@ func CmdDeployErc20() *cobra.Command {
 			}
 
 			bytecode := native.GetBin()
-			abi := native.GetABI()
-			parsedABI, err := ethabi.JSON(strings.NewReader(string(abi)))
-			if err != nil {
-				fmt.Println("failed at parsing abi")
-				return err
-			}
 			constructorArguments := []interface{}{
 				denom, name, symbol, uint8(decimal),
 			}
 
-			packedArgs, err := parsedABI.Pack("", constructorArguments...)
+			packedArgs, err := native.GetParsedABI().Pack("", constructorArguments...)
 			if err != nil {
 				return err
 			}
@@ -325,17 +324,11 @@ func CmdDeployErcCw20() *cobra.Command {
 			}
 
 			bytecode := cw20.GetBin()
-			abi := cw20.GetABI()
-			parsedABI, err := ethabi.JSON(strings.NewReader(string(abi)))
-			if err != nil {
-				fmt.Println("failed at parsing abi")
-				return err
-			}
 			constructorArguments := []interface{}{
 				args[0], args[1], args[2],
 			}
 
-			packedArgs, err := parsedABI.Pack("", constructorArguments...)
+			packedArgs, err := cw20.GetParsedABI().Pack("", constructorArguments...)
 			if err != nil {
 				return err
 			}
@@ -411,17 +404,11 @@ func CmdDeployErcCw721() *cobra.Command {
 			}
 
 			bytecode := cw721.GetBin()
-			abi := cw721.GetABI()
-			parsedABI, err := ethabi.JSON(strings.NewReader(string(abi)))
-			if err != nil {
-				fmt.Println("failed at parsing abi")
-				return err
-			}
 			constructorArguments := []interface{}{
 				args[0], args[1], args[2],
 			}
 
-			packedArgs, err := parsedABI.Pack("", constructorArguments...)
+			packedArgs, err := cw721.GetParsedABI().Pack("", constructorArguments...)
 			if err != nil {
 				return err
 			}
@@ -516,12 +503,17 @@ func CmdCallContract() *cobra.Command {
 				}
 			}
 
+			value, err := cmd.Flags().GetUint64(FlagValue)
+			if err != nil {
+				return err
+			}
+
 			txData, err := getTxData(cmd)
 			if err != nil {
 				return err
 			}
 			txData.Nonce = nonce
-			txData.Value = utils.Big0
+			txData.Value = big.NewInt(int64(value))
 			txData.Data = payload
 			txData.To = &contract
 
@@ -537,6 +529,7 @@ func CmdCallContract() *cobra.Command {
 
 	cmd.Flags().Uint64(FlagGasFeeCap, 1000000000000, "Gas fee cap for the transaction")
 	cmd.Flags().Uint64(FlagGas, 7000000, "Gas limit for the transaction")
+	cmd.Flags().Uint64(FlagValue, 0, "Value for the transaction")
 	cmd.Flags().String(FlagRPC, fmt.Sprintf("http://%s:8545", evmrpc.LocalAddress), "RPC endpoint to send request to")
 	cmd.Flags().Int64(FlagNonce, -1, "Nonce override for the transaction. Negative value means no override")
 	flags.AddTxFlagsToCmd(cmd)
@@ -671,6 +664,72 @@ func CmdDelegate() *cobra.Command {
 
 	cmd.Flags().Uint64(FlagGasFeeCap, 1000000000000, "Gas fee cap for the transaction")
 	cmd.Flags().Uint64(FlagGas, 7000000, "Gas limit for the transaction")
+	cmd.Flags().String(FlagRPC, fmt.Sprintf("http://%s:8545", evmrpc.LocalAddress), "RPC endpoint to send request to")
+	cmd.Flags().Int64(FlagNonce, -1, "Nonce override for the transaction. Negative value means no override")
+	flags.AddTxFlagsToCmd(cmd)
+
+	return cmd
+}
+
+func CmdDeployWSEI() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "deploy-wsei --from=<sender> --gas-fee-cap=<cap> --gas-limt=<limit> --evm-rpc=<url>",
+		Short: "Deploy ERC20 contract for a native Sei token",
+		Long:  "",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
+			contractData := wsei.GetBin()
+
+			key, err := getPrivateKey(cmd)
+			if err != nil {
+				return err
+			}
+
+			rpc, err := cmd.Flags().GetString(FlagRPC)
+			if err != nil {
+				return err
+			}
+			var nonce uint64
+			if n, err := cmd.Flags().GetInt64(FlagNonce); err == nil && n >= 0 {
+				nonce = uint64(n)
+			} else {
+				nonce, err = getNonce(rpc, key.PublicKey)
+				if err != nil {
+					return err
+				}
+			}
+
+			txData, err := getTxData(cmd)
+			if err != nil {
+				return err
+			}
+			txData.Nonce = nonce
+			txData.Value = utils.Big0
+			txData.Data = contractData
+
+			resp, err := sendTx(txData, rpc, key)
+			if err != nil {
+				return err
+			}
+
+			senderAddr := crypto.PubkeyToAddress(key.PublicKey)
+			data, err := rlp.EncodeToBytes([]interface{}{senderAddr, nonce})
+			if err != nil {
+				return err
+			}
+			hash := crypto.Keccak256Hash(data)
+			contractAddress := hash.Bytes()[12:]
+			contractAddressHex := hex.EncodeToString(contractAddress)
+
+			fmt.Println("Deployer:", senderAddr)
+			fmt.Println("Deployed to:", fmt.Sprintf("0x%s", contractAddressHex))
+			fmt.Println("Transaction hash:", resp.Hex())
+			return nil
+		},
+	}
+
+	cmd.Flags().Uint64(FlagGasFeeCap, 1000000000000, "Gas fee cap for the transaction")
+	cmd.Flags().Uint64(FlagGas, 5000000, "Gas limit for the transaction")
 	cmd.Flags().String(FlagRPC, fmt.Sprintf("http://%s:8545", evmrpc.LocalAddress), "RPC endpoint to send request to")
 	cmd.Flags().Int64(FlagNonce, -1, "Nonce override for the transaction. Negative value means no override")
 	flags.AddTxFlagsToCmd(cmd)

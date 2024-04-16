@@ -9,12 +9,13 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 
-	"github.com/sei-protocol/sei-chain/precompiles/wasmd"
+	"github.com/sei-protocol/sei-chain/utils"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	clienttypes "github.com/cosmos/ibc-go/v3/modules/core/02-client/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/vm"
 	pcommon "github.com/sei-protocol/sei-chain/precompiles/common"
 )
@@ -28,6 +29,7 @@ const (
 )
 
 var _ vm.PrecompiledContract = &Precompile{}
+var _ vm.DynamicGasPrecompiledContract = &Precompile{}
 
 // Embed abi json file to the executable binary. Needed when importing as dependency.
 //
@@ -78,30 +80,36 @@ func NewPrecompile(transferKeeper pcommon.TransferKeeper, evmKeeper pcommon.EVMK
 
 // RequiredGas returns the required bare minimum gas to execute the precompile.
 func (p Precompile) RequiredGas(input []byte) uint64 {
-	methodID := input[:4]
+	methodID, err := pcommon.ExtractMethodID(input)
+	if err != nil {
+		return pcommon.UnknownMethodCallGas
+	}
 
 	method, err := p.ABI.MethodById(methodID)
 	if err != nil {
 		// This should never happen since this method is going to fail during Run
-		return 0
+		return pcommon.UnknownMethodCallGas
 	}
 
 	return p.Precompile.RequiredGas(input, p.IsTransaction(method.Name))
 }
 
-func (p Precompile) RunAndCalculateGas(evm *vm.EVM, caller common.Address, callingContract common.Address, input []byte, suppliedGas uint64, value *big.Int) (ret []byte, remainingGas uint64, err error) {
+func (p Precompile) RunAndCalculateGas(evm *vm.EVM, caller common.Address, callingContract common.Address, input []byte, suppliedGas uint64, value *big.Int, _ *tracing.Hooks, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	if readOnly {
+		return nil, 0, errors.New("cannot call IBC precompile from staticcall")
+	}
 	ctx, method, args, err := p.Prepare(evm, input)
 	if err != nil {
 		return nil, 0, err
 	}
-	if err = pcommon.ValidateCaller(ctx, p.evmKeeper, caller, callingContract); err != nil {
-		return nil, 0, err
+	if caller.Cmp(callingContract) != 0 {
+		return nil, 0, errors.New("cannot delegatecall IBC")
 	}
 
 	gasMultiplier := p.evmKeeper.GetPriorityNormalizer(ctx)
-	gasLimitBigInt := new(big.Int).Mul(new(big.Int).SetUint64(suppliedGas), gasMultiplier.RoundInt().BigInt())
-	if gasLimitBigInt.Cmp(wasmd.MaxUint64BigInt) > 0 {
-		gasLimitBigInt = wasmd.MaxUint64BigInt
+	gasLimitBigInt := new(big.Int).Mul(new(big.Int).SetUint64(suppliedGas), gasMultiplier.TruncateInt().BigInt())
+	if gasLimitBigInt.Cmp(utils.BigMaxU64) > 0 {
+		gasLimitBigInt = utils.BigMaxU64
 	}
 	ctx = ctx.WithGasMeter(sdk.NewGasMeter(gasLimitBigInt.Uint64()))
 
@@ -112,7 +120,7 @@ func (p Precompile) RunAndCalculateGas(evm *vm.EVM, caller common.Address, calli
 	return
 }
 
-func (p Precompile) Run(evm *vm.EVM, caller common.Address, input []byte, value *big.Int) (bz []byte, err error) {
+func (p Precompile) Run(*vm.EVM, common.Address, common.Address, []byte, *big.Int, bool) (bz []byte, err error) {
 	panic("static gas Run is not implemented for dynamic gas precompile")
 }
 
@@ -125,7 +133,11 @@ func (p Precompile) transfer(ctx sdk.Context, method *abi.Method, args []interfa
 			return
 		}
 	}()
-	pcommon.AssertArgsLength(args, 8)
+
+	if err := pcommon.ValidateArgsLength(args, 8); err != nil {
+		rerr = err
+		return
+	}
 	senderSeiAddr, ok := p.evmKeeper.GetSeiAddress(ctx, caller)
 	if !ok {
 		rerr = errors.New("caller is not a valid SEI address")

@@ -25,12 +25,16 @@ type EVMKeeper interface {
 	GetSeiAddress(sdk.Context, common.Address) (sdk.AccAddress, bool)
 	GetSeiAddressOrDefault(ctx sdk.Context, evmAddress common.Address) sdk.AccAddress
 	GetEVMAddress(sdk.Context, sdk.AccAddress) (common.Address, bool)
-	GetEVMAddressFromBech32OrDefault(ctx sdk.Context, seiAddress string) common.Address
+	GetEVMAddressFromBech32OrDefault(ctx sdk.Context, seiAddress string) (common.Address, error)
 	GetCodeHash(sdk.Context, common.Address) common.Hash
-	IsCodeHashWhitelistedForDelegateCall(ctx sdk.Context, h common.Hash) bool
-	IsCodeHashWhitelistedForBankSend(ctx sdk.Context, h common.Hash) bool
 	GetPriorityNormalizer(ctx sdk.Context) sdk.Dec
 	GetBaseDenom(ctx sdk.Context) string
+	SetERC20NativePointer(ctx sdk.Context, token string, addr common.Address) error
+	GetERC20NativePointer(ctx sdk.Context, token string) (addr common.Address, version uint16, exists bool)
+	SetERC20CW20Pointer(ctx sdk.Context, cw20Address string, addr common.Address) error
+	GetERC20CW20Pointer(ctx sdk.Context, cw20Address string) (addr common.Address, version uint16, exists bool)
+	SetERC721CW721Pointer(ctx sdk.Context, cw721Address string, addr common.Address) error
+	GetERC721CW721Pointer(ctx sdk.Context, cw721Address string) (addr common.Address, version uint16, exists bool)
 }
 
 type OracleKeeper interface {

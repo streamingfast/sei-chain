@@ -23,9 +23,6 @@ func NewBasicDecorator() *BasicDecorator {
 
 // cherrypicked from go-ethereum:txpool:ValidateTransaction
 func (gl BasicDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simulate bool, next sdk.AnteHandler) (sdk.Context, error) {
-	if !ctx.IsCheckTx() {
-		return next(ctx, tx, simulate)
-	}
 	msg := evmtypes.MustGetEVMTransactionMessage(tx)
 	etx, _ := msg.AsTransaction()
 
@@ -45,29 +42,35 @@ func (gl BasicDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simulate bool, n
 		return ctx, sdkerrors.ErrOutOfGas
 	}
 
-	// Ensure blob transactions have valid commitments
 	if etx.Type() == ethtypes.BlobTxType {
-		sidecar := etx.BlobTxSidecar()
-		if sidecar == nil {
-			return ctx, fmt.Errorf("missing sidecar in blob transaction")
-		}
-		// Ensure the number of items in the blob transaction and various side
-		// data match up before doing any expensive validations
-		hashes := etx.BlobHashes()
-		if len(hashes) == 0 {
-			return ctx, fmt.Errorf("blobless blob transaction")
-		}
-		if len(hashes) > params.MaxBlobGasPerBlock/params.BlobTxBlobGasPerBlob {
-			return ctx, fmt.Errorf("too many blobs in transaction: have %d, permitted %d", len(hashes), params.MaxBlobGasPerBlock/params.BlobTxBlobGasPerBlob)
-		}
-		if err := validateBlobSidecar(hashes, sidecar); err != nil {
-			return ctx, err
-		}
+		return ctx, sdkerrors.ErrUnsupportedTxType
 	}
+
+	//TODO: support blobs (leaving this commented out)
+	// Ensure blob transactions have valid commitments
+	//if etx.Type() == ethtypes.BlobTxType {
+	//	sidecar := etx.BlobTxSidecar()
+	//	if sidecar == nil {
+	//		return ctx, fmt.Errorf("missing sidecar in blob transaction")
+	//	}
+	//	// Ensure the number of items in the blob transaction and various side
+	//	// data match up before doing any expensive validations
+	//	hashes := etx.BlobHashes()
+	//	if len(hashes) == 0 {
+	//		return ctx, fmt.Errorf("blobless blob transaction")
+	//	}
+	//	if len(hashes) > params.MaxBlobGasPerBlock/params.BlobTxBlobGasPerBlob {
+	//		return ctx, fmt.Errorf("too many blobs in transaction: have %d, permitted %d", len(hashes), params.MaxBlobGasPerBlock/params.BlobTxBlobGasPerBlob)
+	//	}
+	//	if err := validateBlobSidecar(hashes, sidecar); err != nil {
+	//		return ctx, err
+	//	}
+	//}
 
 	return next(ctx, tx, simulate)
 }
 
+//nolint:deadcode
 func validateBlobSidecar(hashes []common.Hash, sidecar *ethtypes.BlobTxSidecar) error {
 	if len(sidecar.Blobs) != len(hashes) {
 		return fmt.Errorf("invalid number of %d blobs compared to %d blob hashes", len(sidecar.Blobs), len(hashes))

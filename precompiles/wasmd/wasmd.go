@@ -6,15 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"math/big"
 
+	wasmtypes "github.com/CosmWasm/wasmd/x/wasm/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/vm"
 	pcommon "github.com/sei-protocol/sei-chain/precompiles/common"
+	"github.com/sei-protocol/sei-chain/utils"
 )
 
 const (
@@ -26,13 +27,12 @@ const (
 const WasmdAddress = "0x0000000000000000000000000000000000001002"
 
 var _ vm.PrecompiledContract = &Precompile{}
+var _ vm.DynamicGasPrecompiledContract = &Precompile{}
 
 // Embed abi json file to the executable binary. Needed when importing as dependency.
 //
 //go:embed abi.json
 var f embed.FS
-
-var MaxUint64BigInt = new(big.Int).SetUint64(math.MaxUint64)
 
 type Precompile struct {
 	pcommon.Precompile
@@ -83,12 +83,15 @@ func NewPrecompile(evmKeeper pcommon.EVMKeeper, wasmdKeeper pcommon.WasmdKeeper,
 
 // RequiredGas returns the required bare minimum gas to execute the precompile.
 func (p Precompile) RequiredGas(input []byte) uint64 {
-	methodID := input[:4]
+	methodID, err := pcommon.ExtractMethodID(input)
+	if err != nil {
+		return pcommon.UnknownMethodCallGas
+	}
 
 	method, err := p.ABI.MethodById(methodID)
 	if err != nil {
 		// This should never happen since this method is going to fail during Run
-		return 0
+		return pcommon.UnknownMethodCallGas
 	}
 
 	return p.Precompile.RequiredGas(input, p.IsTransaction(method.Name))
@@ -109,18 +112,15 @@ func (p Precompile) Address() common.Address {
 	return p.address
 }
 
-func (p Precompile) RunAndCalculateGas(evm *vm.EVM, caller common.Address, callingContract common.Address, input []byte, suppliedGas uint64, value *big.Int, logger *tracing.Hooks) (ret []byte, remainingGas uint64, err error) {
+func (p Precompile) RunAndCalculateGas(evm *vm.EVM, caller common.Address, callingContract common.Address, input []byte, suppliedGas uint64, value *big.Int, logger *tracing.Hooks, readOnly bool) (ret []byte, remainingGas uint64, err error) {
 	ctx, method, args, err := p.Prepare(evm, input)
 	if err != nil {
 		return nil, 0, err
 	}
-	if err := pcommon.ValidateCaller(ctx, p.evmKeeper, caller, callingContract); err != nil {
-		return nil, 0, err
-	}
 	gasMultipler := p.evmKeeper.GetPriorityNormalizer(ctx)
-	gasLimitBigInt := new(big.Int).Mul(new(big.Int).SetUint64(suppliedGas), gasMultipler.RoundInt().BigInt())
-	if gasLimitBigInt.Cmp(MaxUint64BigInt) > 0 {
-		gasLimitBigInt = MaxUint64BigInt
+	gasLimitBigInt := sdk.NewDecFromInt(sdk.NewIntFromUint64(suppliedGas)).Mul(gasMultipler).TruncateInt().BigInt()
+	if gasLimitBigInt.Cmp(utils.BigMaxU64) > 0 {
+		gasLimitBigInt = utils.BigMaxU64
 	}
 	ctx = ctx.WithGasMeter(sdk.NewGasMeter(gasLimitBigInt.Uint64()))
 
@@ -130,20 +130,20 @@ func (p Precompile) RunAndCalculateGas(evm *vm.EVM, caller common.Address, calli
 
 	switch method.Name {
 	case InstantiateMethod:
-		return p.instantiate(ctx, method, caller, args, value)
+		return p.instantiate(ctx, method, caller, callingContract, args, value, readOnly)
 	case ExecuteMethod:
-		return p.execute(ctx, method, caller, args, value)
+		return p.execute(ctx, method, caller, callingContract, args, value, readOnly)
 	case QueryMethod:
 		return p.query(ctx, method, args, value)
 	}
 	return
 }
 
-func (p Precompile) Run(*vm.EVM, common.Address, []byte, *big.Int) ([]byte, error) {
+func (p Precompile) Run(*vm.EVM, common.Address, common.Address, []byte, *big.Int, bool) ([]byte, error) {
 	panic("static gas Run is not implemented for dynamic gas precompile")
 }
 
-func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller common.Address, args []interface{}, value *big.Int) (ret []byte, remainingGas uint64, rerr error) {
+func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller common.Address, callingContract common.Address, args []interface{}, value *big.Int, readOnly bool) (ret []byte, remainingGas uint64, rerr error) {
 	defer func() {
 		if err := recover(); err != nil {
 			ret = nil
@@ -152,7 +152,18 @@ func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller comm
 			return
 		}
 	}()
-	pcommon.AssertArgsLength(args, 5)
+	if readOnly {
+		rerr = errors.New("cannot call instantiate from staticcall")
+		return
+	}
+	if err := pcommon.ValidateArgsLength(args, 5); err != nil {
+		rerr = err
+		return
+	}
+	if caller.Cmp(callingContract) != 0 {
+		rerr = errors.New("cannot delegatecall instantiate")
+		return
+	}
 
 	// type assertion will always succeed because it's already validated in p.Prepare call in Run()
 	codeID := args[0].(uint64)
@@ -171,6 +182,7 @@ func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller comm
 	label := args[3].(string)
 	coins := sdk.NewCoins()
 	coinsBz := args[4].([]byte)
+
 	if err := json.Unmarshal(coinsBz, &coins); err != nil {
 		rerr = err
 		return
@@ -179,6 +191,22 @@ func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller comm
 		rerr = errors.New("deposit of usei must be done through the `value` field")
 		return
 	}
+
+	// Run basic validation, can also just expose validateLabel and validate validateWasmCode in sei-wasmd
+	msgInstantiate := wasmtypes.MsgInstantiateContract{
+		Sender: creatorAddr.String(),
+		CodeID: codeID,
+		Label:  label,
+		Funds:  coins,
+		Msg:    msg,
+		Admin:  adminAddrStr,
+	}
+
+	if err := msgInstantiate.ValidateBasic(); err != nil {
+		rerr = err
+		return
+	}
+
 	if value != nil {
 		coin, err := pcommon.HandlePaymentUsei(ctx, p.evmKeeper.GetSeiAddressOrDefault(ctx, p.address), creatorAddr, value, p.bankKeeper)
 		if err != nil {
@@ -198,7 +226,7 @@ func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller comm
 	return
 }
 
-func (p Precompile) execute(ctx sdk.Context, method *abi.Method, caller common.Address, args []interface{}, value *big.Int) (ret []byte, remainingGas uint64, rerr error) {
+func (p Precompile) execute(ctx sdk.Context, method *abi.Method, caller common.Address, callingContract common.Address, args []interface{}, value *big.Int, readOnly bool) (ret []byte, remainingGas uint64, rerr error) {
 	defer func() {
 		if err := recover(); err != nil {
 			ret = nil
@@ -207,10 +235,24 @@ func (p Precompile) execute(ctx sdk.Context, method *abi.Method, caller common.A
 			return
 		}
 	}()
-	pcommon.AssertArgsLength(args, 3)
+	if readOnly {
+		rerr = errors.New("cannot call execute from staticcall")
+		return
+	}
+	if err := pcommon.ValidateArgsLength(args, 3); err != nil {
+		rerr = err
+		return
+	}
 
 	// type assertion will always succeed because it's already validated in p.Prepare call in Run()
 	contractAddrStr := args[0].(string)
+	if caller.Cmp(callingContract) != 0 {
+		erc20pointer, _, erc20exists := p.evmKeeper.GetERC20CW20Pointer(ctx, contractAddrStr)
+		erc721pointer, _, erc721exists := p.evmKeeper.GetERC721CW721Pointer(ctx, contractAddrStr)
+		if (!erc20exists || erc20pointer.Cmp(callingContract) != 0) && (!erc721exists || erc721pointer.Cmp(callingContract) != 0) {
+			return nil, 0, fmt.Errorf("%s is not a pointer of %s", callingContract.Hex(), contractAddrStr)
+		}
+	}
 	// addresses will be sent in Sei format
 	contractAddr, err := sdk.AccAddressFromBech32(contractAddrStr)
 	if err != nil {
@@ -229,6 +271,19 @@ func (p Precompile) execute(ctx sdk.Context, method *abi.Method, caller common.A
 		rerr = errors.New("deposit of usei must be done through the `value` field")
 		return
 	}
+	// Run basic validation, can also just expose validateLabel and validate validateWasmCode in sei-wasmd
+	msgExecute := wasmtypes.MsgExecuteContract{
+		Sender:   senderAddr.String(),
+		Contract: contractAddr.String(),
+		Msg:      msg,
+		Funds:    coins,
+	}
+
+	if err := msgExecute.ValidateBasic(); err != nil {
+		rerr = err
+		return
+	}
+
 	if value != nil {
 		coin, err := pcommon.HandlePaymentUsei(ctx, p.evmKeeper.GetSeiAddressOrDefault(ctx, p.address), senderAddr, value, p.bankKeeper)
 		if err != nil {
@@ -256,8 +311,15 @@ func (p Precompile) query(ctx sdk.Context, method *abi.Method, args []interface{
 			return
 		}
 	}()
-	pcommon.AssertNonPayable(value)
-	pcommon.AssertArgsLength(args, 2)
+	if err := pcommon.ValidateNonPayable(value); err != nil {
+		rerr = err
+		return
+	}
+
+	if err := pcommon.ValidateArgsLength(args, 2); err != nil {
+		rerr = err
+		return
+	}
 
 	contractAddrStr := args[0].(string)
 	// addresses will be sent in Sei format
@@ -267,6 +329,13 @@ func (p Precompile) query(ctx sdk.Context, method *abi.Method, args []interface{
 		return
 	}
 	req := args[1].([]byte)
+
+	rawContractMessage := wasmtypes.RawContractMessage(req)
+	if err := rawContractMessage.ValidateBasic(); err != nil {
+		rerr = err
+		return
+	}
+
 	res, err := p.wasmdViewKeeper.QuerySmart(ctx, contractAddr, req)
 	if err != nil {
 		rerr = err

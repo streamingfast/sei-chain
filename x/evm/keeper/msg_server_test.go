@@ -16,6 +16,8 @@ import (
 	"github.com/sei-protocol/sei-chain/example/contracts/simplestorage"
 	testkeeper "github.com/sei-protocol/sei-chain/testutil/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/ante"
+	"github.com/sei-protocol/sei-chain/x/evm/artifacts/erc20"
+	"github.com/sei-protocol/sei-chain/x/evm/artifacts/erc721"
 	"github.com/sei-protocol/sei-chain/x/evm/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
@@ -300,8 +302,7 @@ func TestEVMPrecompiles(t *testing.T) {
 	require.Nil(t, err)
 	require.NotNil(t, receipt)
 	require.Equal(t, uint32(ethtypes.ReceiptStatusSuccessful), receipt.Status)
-	codeHash := k.GetCodeHash(ctx, common.HexToAddress(receipt.ContractAddress))
-	k.AddCodeHashWhitelistedForBankSend(ctx, codeHash)
+	k.SetERC20NativePointer(ctx, k.GetBaseDenom(ctx), common.HexToAddress(receipt.ContractAddress))
 
 	// call sendall
 	addr1, evmAddr1 := testkeeper.MockAddressPair()
@@ -455,4 +456,86 @@ func TestSend(t *testing.T) {
 	require.Nil(t, err)
 	require.Equal(t, sdk.NewInt(500000), k.BankKeeper().GetBalance(ctx, seiFrom, "usei").Amount)
 	require.Equal(t, sdk.NewInt(500000), k.BankKeeper().GetBalance(ctx, seiTo, "usei").Amount)
+}
+
+func TestRegisterPointer(t *testing.T) {
+	k, ctx := testkeeper.MockEVMKeeper()
+	sender, _ := testkeeper.MockAddressPair()
+	_, pointee := testkeeper.MockAddressPair()
+	res, err := keeper.NewMsgServerImpl(k).RegisterPointer(sdk.WrapSDKContext(ctx), &types.MsgRegisterPointer{
+		Sender:      sender.String(),
+		PointerType: types.PointerType_ERC20,
+		ErcAddress:  pointee.Hex(),
+	})
+	require.Nil(t, err)
+	pointer, version, exists := k.GetCW20ERC20Pointer(ctx, pointee)
+	require.True(t, exists)
+	require.Equal(t, erc20.CurrentVersion, version)
+	require.Equal(t, pointer.String(), res.PointerAddress)
+	hasRegisteredEvent := false
+	for _, e := range ctx.EventManager().Events() {
+		if e.Type != types.EventTypePointerRegistered {
+			continue
+		}
+		hasRegisteredEvent = true
+		require.Equal(t, types.EventTypePointerRegistered, e.Type)
+		require.Equal(t, "erc20", string(e.Attributes[0].Value))
+	}
+	require.True(t, hasRegisteredEvent)
+	ctx = ctx.WithEventManager(sdk.NewEventManager())
+
+	// already exists
+	_, err = keeper.NewMsgServerImpl(k).RegisterPointer(sdk.WrapSDKContext(ctx), &types.MsgRegisterPointer{
+		Sender:      sender.String(),
+		PointerType: types.PointerType_ERC20,
+		ErcAddress:  pointee.Hex(),
+	})
+	require.NotNil(t, err)
+	hasRegisteredEvent = false
+	for _, e := range ctx.EventManager().Events() {
+		if e.Type != types.EventTypePointerRegistered {
+			continue
+		}
+		hasRegisteredEvent = true
+	}
+	require.False(t, hasRegisteredEvent)
+	ctx = ctx.WithEventManager(sdk.NewEventManager())
+
+	res, err = keeper.NewMsgServerImpl(k).RegisterPointer(sdk.WrapSDKContext(ctx), &types.MsgRegisterPointer{
+		Sender:      sender.String(),
+		PointerType: types.PointerType_ERC721,
+		ErcAddress:  pointee.Hex(),
+	})
+	require.Nil(t, err)
+	pointer, version, exists = k.GetCW721ERC721Pointer(ctx, pointee)
+	require.True(t, exists)
+	require.Equal(t, erc721.CurrentVersion, version)
+	require.Equal(t, pointer.String(), res.PointerAddress)
+	hasRegisteredEvent = false
+	for _, e := range ctx.EventManager().Events() {
+		if e.Type != types.EventTypePointerRegistered {
+			continue
+		}
+		hasRegisteredEvent = true
+		require.Equal(t, types.EventTypePointerRegistered, e.Type)
+		require.Equal(t, "erc721", string(e.Attributes[0].Value))
+	}
+	require.True(t, hasRegisteredEvent)
+	ctx = ctx.WithEventManager(sdk.NewEventManager())
+
+	// already exists
+	_, err = keeper.NewMsgServerImpl(k).RegisterPointer(sdk.WrapSDKContext(ctx), &types.MsgRegisterPointer{
+		Sender:      sender.String(),
+		PointerType: types.PointerType_ERC721,
+		ErcAddress:  pointee.Hex(),
+	})
+	require.NotNil(t, err)
+	hasRegisteredEvent = false
+	for _, e := range ctx.EventManager().Events() {
+		if e.Type != types.EventTypePointerRegistered {
+			continue
+		}
+		hasRegisteredEvent = true
+	}
+	require.False(t, hasRegisteredEvent)
 }

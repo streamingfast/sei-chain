@@ -11,6 +11,7 @@ import (
 	"sort"
 	"sync"
 
+	wasmkeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
 	"github.com/cosmos/cosmos-sdk/store/prefix"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authkeeper "github.com/cosmos/cosmos-sdk/x/auth/keeper"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/sei-protocol/sei-chain/utils"
 	"github.com/sei-protocol/sei-chain/x/evm/blocktest"
+	"github.com/sei-protocol/sei-chain/x/evm/querier"
 	"github.com/sei-protocol/sei-chain/x/evm/replay"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
@@ -49,12 +51,15 @@ type Keeper struct {
 	accountKeeper  *authkeeper.AccountKeeper
 	stakingKeeper  *stakingkeeper.Keeper
 	transferKeeper ibctransferkeeper.Keeper
+	wasmKeeper     *wasmkeeper.PermissionedKeeper
 
 	cachedFeeCollectorAddressMtx *sync.RWMutex
 	cachedFeeCollectorAddress    *common.Address
 	nonceMx                      *sync.RWMutex
 	pendingTxs                   map[string][]*PendingTx
 	keyToNonce                   map[tmtypes.TxKey]*AddressNoncePair
+
+	QueryConfig *querier.Config
 
 	// only used during ETH replay. Not used in chain critical path.
 	EthClient       *ethclient.Client
@@ -76,6 +81,7 @@ type EvmTxDeferredInfo struct {
 	TxHash  common.Hash
 	TxBloom ethtypes.Bloom
 	Surplus sdk.Int
+	Error   string
 }
 
 type AddressNoncePair struct {
@@ -109,7 +115,7 @@ func (ctx *ReplayChainContext) GetHeader(hash common.Hash, number uint64) *ethty
 func NewKeeper(
 	storeKey sdk.StoreKey, memStoreKey sdk.StoreKey, paramstore paramtypes.Subspace,
 	bankKeeper bankkeeper.Keeper, accountKeeper *authkeeper.AccountKeeper, stakingKeeper *stakingkeeper.Keeper,
-	transferKeeper ibctransferkeeper.Keeper) *Keeper {
+	transferKeeper ibctransferkeeper.Keeper, wasmKeeper *wasmkeeper.PermissionedKeeper) *Keeper {
 	if !paramstore.HasKeyTable() {
 		paramstore = paramstore.WithKeyTable(types.ParamKeyTable())
 	}
@@ -121,6 +127,7 @@ func NewKeeper(
 		accountKeeper:                accountKeeper,
 		stakingKeeper:                stakingKeeper,
 		transferKeeper:               transferKeeper,
+		wasmKeeper:                   wasmKeeper,
 		pendingTxs:                   make(map[string][]*PendingTx),
 		nonceMx:                      &sync.RWMutex{},
 		cachedFeeCollectorAddressMtx: &sync.RWMutex{},
@@ -136,6 +143,10 @@ func (k *Keeper) AccountKeeper() *authkeeper.AccountKeeper {
 
 func (k *Keeper) BankKeeper() bankkeeper.Keeper {
 	return k.bankKeeper
+}
+
+func (k *Keeper) WasmKeeper() *wasmkeeper.PermissionedKeeper {
+	return k.wasmKeeper
 }
 
 func (k *Keeper) GetStoreKey() sdk.StoreKey {
@@ -170,16 +181,25 @@ func (k *Keeper) GetVMBlockContext(ctx sdk.Context, gp core.GasPool) (*vm.BlockC
 		return nil, err
 	}
 	rh := common.BytesToHash(r)
+
+	txfer := func(db vm.StateDB, sender, recipient common.Address, amount *big.Int) {
+		if IsPayablePrecompile(&recipient) {
+			state.TransferWithoutEvents(db, sender, recipient, amount)
+		} else {
+			core.Transfer(db, sender, recipient, amount)
+		}
+	}
+
 	return &vm.BlockContext{
 		CanTransfer: core.CanTransfer,
-		Transfer:    core.Transfer,
+		Transfer:    txfer,
 		GetHash:     k.GetHashFn(ctx),
 		Coinbase:    coinbase,
 		GasLimit:    gp.Gas(),
 		BlockNumber: big.NewInt(ctx.BlockHeight()),
 		Time:        uint64(ctx.BlockHeader().Time.Unix()),
-		Difficulty:  utils.Big0,                                  // only needed for PoW
-		BaseFee:     k.GetBaseFeePerGas(ctx).RoundInt().BigInt(), // feemarket not enabled
+		Difficulty:  utils.Big0,                                     // only needed for PoW
+		BaseFee:     k.GetBaseFeePerGas(ctx).TruncateInt().BigInt(), // feemarket not enabled
 		Random:      &rh,
 	}, nil
 }
@@ -212,7 +232,7 @@ func (k *Keeper) GetEVMTxDeferredInfo(ctx sdk.Context) (res []EvmTxDeferredInfo)
 			ctx.Logger().Error(fmt.Sprintf("getting invalid tx index in EVM deferred info: %d, num of txs: %d", txIdx, len(k.txResults)))
 			return true
 		}
-		if k.txResults[txIdx].Code == 0 {
+		if k.txResults[txIdx].Code == 0 || value.(*EvmTxDeferredInfo).Error != "" {
 			res = append(res, *(value.(*EvmTxDeferredInfo)))
 		}
 		return true
@@ -227,6 +247,14 @@ func (k *Keeper) AppendToEvmTxDeferredInfo(ctx sdk.Context, bloom ethtypes.Bloom
 		TxBloom: bloom,
 		TxHash:  txHash,
 		Surplus: surplus,
+	})
+}
+
+func (k *Keeper) AppendErrorToEvmTxDeferredInfo(ctx sdk.Context, txHash common.Hash, err string) {
+	k.deferredInfo.Store(ctx.TxIndex(), &EvmTxDeferredInfo{
+		TxIndx: ctx.TxIndex(),
+		TxHash: txHash,
+		Error:  err,
 	})
 }
 
@@ -411,8 +439,12 @@ func (k *Keeper) GetBaseFee(ctx sdk.Context) *big.Int {
 		return k.ReplayBlock.Header_.BaseFee
 	}
 	if k.EthBlockTestConfig.Enabled {
-		block := k.BlockTest.Json.Blocks[ctx.BlockHeight()-1]
-		return block.BlockHeader.BaseFeePerGas
+		bb := k.BlockTest.Json.Blocks[ctx.BlockHeight()-1]
+		b, err := bb.Decode()
+		if err != nil {
+			panic(err)
+		}
+		return b.Header_.BaseFee
 	}
 	return nil
 }
@@ -450,27 +482,21 @@ func (k *Keeper) getInt64State(ctx sdk.Context, key []byte) int64 {
 }
 
 func (k *Keeper) getBlockTestBlockCtx(ctx sdk.Context) (*vm.BlockContext, error) {
-	btBlock := k.BlockTest.Json.Blocks[ctx.BlockHeight()-1]
-	btHeader := btBlock.BlockHeader
-	header := &ethtypes.Header{
-		ParentHash:  btHeader.ParentHash,
-		UncleHash:   btHeader.UncleHash,
-		Coinbase:    btHeader.Coinbase,
-		Root:        btHeader.StateRoot,
-		TxHash:      btHeader.TransactionsTrie,
-		ReceiptHash: btHeader.ReceiptTrie,
-		Bloom:       btHeader.Bloom,
-		Difficulty:  btHeader.Difficulty,
-		Number:      new(big.Int).Set(btHeader.Number),
-		GasLimit:    btHeader.GasLimit,
-		GasUsed:     btHeader.GasUsed,
-		Time:        btHeader.Timestamp,
-		Extra:       btHeader.ExtraData,
-		MixDigest:   btHeader.MixHash,
-		Nonce:       btHeader.Nonce,
-		BaseFee:     btHeader.BaseFeePerGas,
+	bb := k.BlockTest.Json.Blocks[ctx.BlockHeight()-1]
+	b, err := bb.Decode()
+	if err != nil {
+		return nil, err
 	}
-	getHash := core.GetHashFn(header, &ReplayChainContext{ethClient: k.EthClient})
+	header := b.Header_
+	getHash := func(height uint64) common.Hash {
+		height = height + 1
+		for i := 0; i < len(k.BlockTest.Json.Blocks); i++ {
+			if k.BlockTest.Json.Blocks[i].BlockHeader.Number.Uint64() == height {
+				return k.BlockTest.Json.Blocks[i].BlockHeader.Hash
+			}
+		}
+		panic(fmt.Sprintf("block hash not found for height %d", height))
+	}
 	var (
 		baseFee     *big.Int
 		blobBaseFee *big.Int
@@ -481,6 +507,8 @@ func (k *Keeper) getBlockTestBlockCtx(ctx sdk.Context) (*vm.BlockContext, error)
 	}
 	if header.ExcessBlobGas != nil {
 		blobBaseFee = eip4844.CalcBlobFee(*header.ExcessBlobGas)
+	} else {
+		blobBaseFee = eip4844.CalcBlobFee(0)
 	}
 	if header.Difficulty.Cmp(common.Big0) == 0 {
 		random = &header.MixDigest

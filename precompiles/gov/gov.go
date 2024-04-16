@@ -79,24 +79,35 @@ func NewPrecompile(govKeeper pcommon.GovKeeper, evmKeeper pcommon.EVMKeeper, ban
 
 // RequiredGas returns the required bare minimum gas to execute the precompile.
 func (p Precompile) RequiredGas(input []byte) uint64 {
-	methodID := input[:4]
+	methodID, err := pcommon.ExtractMethodID(input)
+	if err != nil {
+		return pcommon.UnknownMethodCallGas
+	}
 
 	if bytes.Equal(methodID, p.VoteID) {
 		return 30000
 	} else if bytes.Equal(methodID, p.DepositID) {
 		return 30000
 	}
-	panic("unknown method")
+
+	// This should never happen since this is going to fail during Run
+	return pcommon.UnknownMethodCallGas
 }
 
 func (p Precompile) Address() common.Address {
 	return p.address
 }
 
-func (p Precompile) Run(evm *vm.EVM, caller common.Address, input []byte, value *big.Int) (bz []byte, err error) {
+func (p Precompile) Run(evm *vm.EVM, caller common.Address, callingContract common.Address, input []byte, value *big.Int, readOnly bool) (bz []byte, err error) {
+	if readOnly {
+		return nil, errors.New("cannot call gov precompile from staticcall")
+	}
 	ctx, method, args, err := p.Prepare(evm, input)
 	if err != nil {
 		return nil, err
+	}
+	if caller.Cmp(callingContract) != 0 {
+		return nil, errors.New("cannot delegatecall gov")
 	}
 
 	switch method.Name {
@@ -109,8 +120,13 @@ func (p Precompile) Run(evm *vm.EVM, caller common.Address, input []byte, value 
 }
 
 func (p Precompile) vote(ctx sdk.Context, method *abi.Method, caller common.Address, args []interface{}, value *big.Int) ([]byte, error) {
-	pcommon.AssertNonPayable(value)
-	pcommon.AssertArgsLength(args, 2)
+	if err := pcommon.ValidateNonPayable(value); err != nil {
+		return nil, err
+	}
+
+	if err := pcommon.ValidateArgsLength(args, 2); err != nil {
+		return nil, err
+	}
 	voter := p.evmKeeper.GetSeiAddressOrDefault(ctx, caller)
 	proposalID := args[0].(uint64)
 	voteOption := args[1].(int32)
@@ -122,7 +138,9 @@ func (p Precompile) vote(ctx sdk.Context, method *abi.Method, caller common.Addr
 }
 
 func (p Precompile) deposit(ctx sdk.Context, method *abi.Method, caller common.Address, args []interface{}, value *big.Int) ([]byte, error) {
-	pcommon.AssertArgsLength(args, 1)
+	if err := pcommon.ValidateArgsLength(args, 1); err != nil {
+		return nil, err
+	}
 	depositor := p.evmKeeper.GetSeiAddressOrDefault(ctx, caller)
 	proposalID := args[0].(uint64)
 	if value == nil || value.Sign() == 0 {

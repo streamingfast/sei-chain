@@ -31,6 +31,9 @@ type DBImpl struct {
 	k          EVMKeeper
 	simulation bool
 
+	// for cases like bank.send_native, we want to suppress transfer events
+	eventsSuppressed bool
+
 	logger *tracing.Hooks
 }
 
@@ -45,6 +48,14 @@ func NewDBImpl(ctx sdk.Context, k EVMKeeper, simulation bool) *DBImpl {
 	}
 	s.Snapshot() // take an initial snapshot for GetCommitted
 	return s
+}
+
+func (s *DBImpl) DisableEvents() {
+	s.eventsSuppressed = true
+}
+
+func (s *DBImpl) EnableEvents() {
+	s.eventsSuppressed = false
 }
 
 func (s *DBImpl) SetLogger(logger *tracing.Hooks) {
@@ -78,9 +89,13 @@ func (s *DBImpl) Finalize() (surplus sdk.Int, err error) {
 	for i := len(s.snapshottedCtxs) - 1; i > 0; i-- {
 		s.flushCtx(s.snapshottedCtxs[i])
 	}
+
+	// delete state of self-destructed accoutns
+	s.clearAccountStateIfDestructed(s.tempStateCurrent)
 	surplus = s.tempStateCurrent.surplus
 	for _, ts := range s.tempStatesHist {
 		surplus = surplus.Add(ts.surplus)
+		s.clearAccountStateIfDestructed(ts)
 	}
 	if surplus.IsNegative() {
 		err = fmt.Errorf("negative surplus value: %s", surplus.String())

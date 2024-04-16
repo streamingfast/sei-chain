@@ -6,6 +6,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
+	"github.com/sei-protocol/sei-chain/app/antedecorators"
 	"github.com/sei-protocol/sei-chain/utils"
 	"github.com/sei-protocol/sei-chain/x/evm/derived"
 	evmkeeper "github.com/sei-protocol/sei-chain/x/evm/keeper"
@@ -72,20 +73,20 @@ func (fc EVMFeeCheckDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simulate b
 
 // fee per gas to be burnt
 func (fc EVMFeeCheckDecorator) getBaseFee(ctx sdk.Context) *big.Int {
-	return fc.evmKeeper.GetBaseFeePerGas(ctx).RoundInt().BigInt()
+	return fc.evmKeeper.GetBaseFeePerGas(ctx).TruncateInt().BigInt()
 }
 
 // lowest allowed fee per gas
 func (fc EVMFeeCheckDecorator) getMinimumFee(ctx sdk.Context) *big.Int {
-	return fc.evmKeeper.GetMinimumFeePerGas(ctx).RoundInt().BigInt()
+	return fc.evmKeeper.GetMinimumFeePerGas(ctx).TruncateInt().BigInt()
 }
 
 // CalculatePriority returns a priority based on the effective gas price of the transaction
 func (fc EVMFeeCheckDecorator) CalculatePriority(ctx sdk.Context, txData ethtx.TxData) *big.Int {
 	gp := txData.EffectiveGasPrice(utils.Big0)
-	priority := new(big.Int).Quo(gp, fc.evmKeeper.GetPriorityNormalizer(ctx).RoundInt().BigInt())
-	if priority.Cmp(utils.BigMaxI64) > 0 {
-		priority = utils.BigMaxI64
+	priority := sdk.NewDecFromBigInt(gp).Quo(fc.evmKeeper.GetPriorityNormalizer(ctx)).TruncateInt().BigInt()
+	if priority.Cmp(big.NewInt(antedecorators.MaxPriority)) > 0 {
+		priority = big.NewInt(antedecorators.MaxPriority)
 	}
 	return priority
 }

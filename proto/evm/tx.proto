@@ -4,12 +4,14 @@ package seiprotocol.seichain.evm;
 import "google/protobuf/any.proto";
 import "gogoproto/gogo.proto";
 import "cosmos/base/v1beta1/coin.proto";
+import "evm/enums.proto";
 
 option go_package = "github.com/sei-protocol/sei-chain/x/evm/types";
 
 service Msg {
   rpc EVMTransaction(MsgEVMTransaction) returns (MsgEVMTransactionResponse);
   rpc Send(MsgSend) returns (MsgSendResponse);
+  rpc RegisterPointer(MsgRegisterPointer) returns (MsgRegisterPointerResponse);
 }
 
 message MsgEVMTransaction {
@@ -53,3 +55,13 @@ message MsgSend {
 }
 
 message MsgSendResponse {}
+
+message MsgRegisterPointer {
+  string sender = 1;
+  PointerType pointer_type = 2;
+  string erc_address = 3;
+}
+
+message MsgRegisterPointerResponse {
+  string pointer_address = 1;
+}

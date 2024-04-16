@@ -3,14 +3,16 @@ package evm
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 
 	// this line is used by starport scaffolding # 1
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/tests"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/gorilla/mux"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/spf13/cobra"
@@ -141,6 +143,10 @@ func (am AppModule) RegisterServices(cfg module.Configurator) {
 	_ = cfg.RegisterMigration(types.ModuleName, 3, func(ctx sdk.Context) error {
 		return migrations.AddNewParamsAndSetAllToDefaults(ctx, am.keeper)
 	})
+
+	_ = cfg.RegisterMigration(types.ModuleName, 4, func(ctx sdk.Context) error {
+		return migrations.StoreCWPointerCode(ctx, am.keeper)
+	})
 }
 
 // RegisterInvariants registers the capability module's invariants.
@@ -165,14 +171,30 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, cdc codec.JSONCodec) json.Raw
 }
 
 // ConsensusVersion implements ConsensusVersion.
-func (AppModule) ConsensusVersion() uint64 { return 4 }
+func (AppModule) ConsensusVersion() uint64 { return 5 }
 
 // BeginBlock executes all ABCI BeginBlock logic respective to the capability module.
-func (am AppModule) BeginBlock(sdk.Context, abci.RequestBeginBlock) {
+func (am AppModule) BeginBlock(ctx sdk.Context, _ abci.RequestBeginBlock) {
 	// clear tx responses from last block
 	am.keeper.SetTxResults([]*abci.ExecTxResult{})
 	// clear the TxDeferredInfo
 	am.keeper.ClearEVMTxDeferredInfo()
+	// mock beacon root if replaying
+	if am.keeper.EthReplayConfig.Enabled {
+		if beaconRoot := am.keeper.ReplayBlock.BeaconRoot(); beaconRoot != nil {
+			blockCtx, err := am.keeper.GetVMBlockContext(ctx, core.GasPool(math.MaxUint64))
+			if err != nil {
+				panic(err)
+			}
+			statedb := state.NewDBImpl(ctx, am.keeper, false)
+			vmenv := vm.NewEVM(*blockCtx, vm.TxContext{}, statedb, types.DefaultChainConfig().EthereumConfig(am.keeper.ChainID(ctx)), vm.Config{})
+			core.ProcessBeaconBlockRoot(*beaconRoot, vmenv, statedb)
+			_, err = statedb.Finalize()
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
 }
 
 // EndBlock executes all ABCI EndBlock logic respective to the evm module. It
@@ -181,22 +203,13 @@ func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.Val
 	var coinbase sdk.AccAddress
 	if am.keeper.EthBlockTestConfig.Enabled {
 		blocks := am.keeper.BlockTest.Json.Blocks
-		var block *tests.BtBlock
-		for i, b := range blocks {
-			if b.BlockHeader.Number.Uint64() == uint64(ctx.BlockHeight()) {
-				block = &blocks[i]
-			}
-		}
-		if block == nil {
-			panic(fmt.Sprintf("block not found at height %d", ctx.BlockHeight()))
-		}
-		coinbase = am.keeper.GetSeiAddressOrDefault(ctx, block.BlockHeader.Coinbase)
-	} else if am.keeper.EthReplayConfig.Enabled {
-		block, err := am.keeper.EthClient.BlockByNumber(ctx.Context(), big.NewInt(ctx.BlockHeight()+am.keeper.GetReplayInitialHeight(ctx)))
+		block, err := blocks[ctx.BlockHeight()-1].Decode()
 		if err != nil {
-			panic(fmt.Sprintf("error getting block at height %d", ctx.BlockHeight()+am.keeper.GetReplayInitialHeight(ctx)))
+			panic(err)
 		}
 		coinbase = am.keeper.GetSeiAddressOrDefault(ctx, block.Header_.Coinbase)
+	} else if am.keeper.EthReplayConfig.Enabled {
+		coinbase = am.keeper.GetSeiAddressOrDefault(ctx, am.keeper.ReplayBlock.Header_.Coinbase)
 		am.keeper.SetReplayedHeight(ctx)
 	} else {
 		coinbase = am.keeper.AccountKeeper().GetModuleAddress(authtypes.FeeCollectorName)
@@ -206,6 +219,14 @@ func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.Val
 	denom := am.keeper.GetBaseDenom(ctx)
 	surplus := utils.Sdk0
 	for _, deferredInfo := range evmTxDeferredInfoList {
+		if deferredInfo.Error != "" {
+			_ = am.keeper.SetReceipt(ctx, deferredInfo.TxHash, &types.Receipt{
+				TxHashHex:        deferredInfo.TxHash.Hex(),
+				TransactionIndex: uint32(deferredInfo.TxIndx),
+				VmError:          deferredInfo.Error,
+			})
+			continue
+		}
 		idx := deferredInfo.TxIndx
 		coinbaseAddress := state.GetCoinbaseAddress(idx)
 		balance := am.keeper.BankKeeper().GetBalance(ctx, coinbaseAddress, denom)

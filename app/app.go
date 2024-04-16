@@ -127,6 +127,7 @@ import (
 	evmante "github.com/sei-protocol/sei-chain/x/evm/ante"
 	"github.com/sei-protocol/sei-chain/x/evm/blocktest"
 	evmkeeper "github.com/sei-protocol/sei-chain/x/evm/keeper"
+	"github.com/sei-protocol/sei-chain/x/evm/querier"
 	"github.com/sei-protocol/sei-chain/x/evm/replay"
 	evmtracers "github.com/sei-protocol/sei-chain/x/evm/tracers"
 	"github.com/sei-protocol/sei-chain/x/evm/tracing"
@@ -595,11 +596,16 @@ func New(
 
 	app.EvmKeeper = *evmkeeper.NewKeeper(keys[evmtypes.StoreKey], memKeys[evmtypes.MemStoreKey],
 		app.GetSubspace(evmtypes.ModuleName), app.BankKeeper, &app.AccountKeeper, &app.StakingKeeper,
-		app.TransferKeeper)
+		app.TransferKeeper, wasmkeeper.NewDefaultPermissionKeeper(app.WasmKeeper))
 	app.evmRPCConfig, err = evmrpc.ReadConfig(appOpts)
 	if err != nil {
 		panic(fmt.Sprintf("error reading EVM config due to %s", err))
 	}
+	evmQueryConfig, err := querier.ReadConfig(appOpts)
+	if err != nil {
+		panic(fmt.Sprintf("error reading evm query config due to %s", err))
+	}
+	app.EvmKeeper.QueryConfig = &evmQueryConfig
 	ethReplayConfig, err := replay.ReadConfig(appOpts)
 	if err != nil {
 		panic(fmt.Sprintf("error reading eth replay config due to %s", err))
@@ -658,7 +664,8 @@ func New(
 		AddRoute(dexmoduletypes.RouterKey, dexmodule.NewProposalHandler(app.DexKeeper)).
 		AddRoute(minttypes.RouterKey, mint.NewProposalHandler(app.MintKeeper)).
 		AddRoute(tokenfactorytypes.RouterKey, tokenfactorymodule.NewProposalHandler(app.TokenFactoryKeeper)).
-		AddRoute(acltypes.ModuleName, aclmodule.NewProposalHandler(app.AccessControlKeeper))
+		AddRoute(acltypes.ModuleName, aclmodule.NewProposalHandler(app.AccessControlKeeper)).
+		AddRoute(evmtypes.RouterKey, evm.NewProposalHandler(app.EvmKeeper))
 	if len(enabledProposals) != 0 {
 		govRouter.AddRoute(wasm.RouterKey, wasm.NewWasmProposalHandler(app.WasmKeeper, enabledProposals))
 	}
@@ -826,8 +833,8 @@ func New(
 		oracletypes.ModuleName,
 		tokenfactorytypes.ModuleName,
 		epochmoduletypes.ModuleName,
-		evmtypes.ModuleName,
 		wasm.ModuleName,
+		evmtypes.ModuleName,
 		acltypes.ModuleName,
 		// this line is used by starport scaffolding # stargate/app/initGenesis
 	)
@@ -1463,6 +1470,7 @@ func (app *App) ProcessTXsWithOCC(ctx sdk.Context, txs [][]byte, typedTxs []sdk.
 			GasUsed:   r.Response.GasUsed,
 			Events:    r.Response.Events,
 			Codespace: r.Response.Codespace,
+			EvmTxInfo: r.Response.EvmTxInfo,
 		})
 	}
 

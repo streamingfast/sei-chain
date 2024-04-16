@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	gjson "encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -73,6 +74,9 @@ func NewPrecompile() (*Precompile, error) {
 
 // RequiredGas returns the required bare minimum gas to execute the precompile.
 func (p Precompile) RequiredGas(input []byte) uint64 {
+	if len(input) < 4 {
+		return pcommon.UnknownMethodCallGas
+	}
 	return uint64(GasCostPerByte * (len(input) - 4))
 }
 
@@ -84,7 +88,7 @@ func (p Precompile) Address() common.Address {
 	return p.address
 }
 
-func (p Precompile) Run(evm *vm.EVM, _ common.Address, input []byte, value *big.Int) (bz []byte, err error) {
+func (p Precompile) Run(evm *vm.EVM, _ common.Address, _ common.Address, input []byte, value *big.Int, _ bool) (bz []byte, err error) {
 	ctx, method, args, err := p.Prepare(evm, input)
 	if err != nil {
 		return nil, err
@@ -101,6 +105,11 @@ func (p Precompile) Run(evm *vm.EVM, _ common.Address, input []byte, value *big.
 		if err != nil {
 			return nil, err
 		}
+
+		if uint_.BitLen() > 256 {
+			return nil, errors.New("value does not fit in 32 bytes")
+		}
+
 		uint_.FillBytes(byteArr)
 		return byteArr, nil
 	}
@@ -108,8 +117,13 @@ func (p Precompile) Run(evm *vm.EVM, _ common.Address, input []byte, value *big.
 }
 
 func (p Precompile) extractAsBytes(_ sdk.Context, method *abi.Method, args []interface{}, value *big.Int) ([]byte, error) {
-	pcommon.AssertNonPayable(value)
-	pcommon.AssertArgsLength(args, 2)
+	if err := pcommon.ValidateNonPayable(value); err != nil {
+		return nil, err
+	}
+
+	if err := pcommon.ValidateArgsLength(args, 2); err != nil {
+		return nil, err
+	}
 
 	// type assertion will always succeed because it's already validated in p.Prepare call in Run()
 	bz := args[0].([]byte)
@@ -131,12 +145,17 @@ func (p Precompile) extractAsBytes(_ sdk.Context, method *abi.Method, args []int
 }
 
 func (p Precompile) extractAsBytesList(_ sdk.Context, method *abi.Method, args []interface{}, value *big.Int) ([]byte, error) {
-	pcommon.AssertNonPayable(value)
-	pcommon.AssertArgsLength(args, 2)
+	if err := pcommon.ValidateNonPayable(value); err != nil {
+		return nil, err
+	}
+
+	if err := pcommon.ValidateArgsLength(args, 2); err != nil {
+		return nil, err
+	}
 
 	// type assertion will always succeed because it's already validated in p.Prepare call in Run()
 	bz := args[0].([]byte)
-	decoded := map[string][]gjson.RawMessage{}
+	decoded := map[string]gjson.RawMessage{}
 	if err := gjson.Unmarshal(bz, &decoded); err != nil {
 		return nil, err
 	}
@@ -145,13 +164,22 @@ func (p Precompile) extractAsBytesList(_ sdk.Context, method *abi.Method, args [
 	if !ok {
 		return nil, fmt.Errorf("input does not contain key %s", key)
 	}
+	decodedResult := []gjson.RawMessage{}
+	if err := gjson.Unmarshal(result, &decodedResult); err != nil {
+		return nil, err
+	}
 
-	return method.Outputs.Pack(utils.Map(result, func(r gjson.RawMessage) []byte { return []byte(r) }))
+	return method.Outputs.Pack(utils.Map(decodedResult, func(r gjson.RawMessage) []byte { return []byte(r) }))
 }
 
 func (p Precompile) ExtractAsUint256(_ sdk.Context, _ *abi.Method, args []interface{}, value *big.Int) (*big.Int, error) {
-	pcommon.AssertNonPayable(value)
-	pcommon.AssertArgsLength(args, 2)
+	if err := pcommon.ValidateNonPayable(value); err != nil {
+		return nil, err
+	}
+
+	if err := pcommon.ValidateArgsLength(args, 2); err != nil {
+		return nil, err
+	}
 
 	// type assertion will always succeed because it's already validated in p.Prepare call in Run()
 	bz := args[0].([]byte)

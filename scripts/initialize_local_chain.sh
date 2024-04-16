@@ -60,6 +60,7 @@ cat ~/.sei/config/genesis.json | jq '.app_state["oracle"]["params"]["whitelist"]
 cat ~/.sei/config/genesis.json | jq '.app_state["distribution"]["params"]["community_tax"]="0.000000000000000000"' > ~/.sei/config/tmp_genesis.json && mv ~/.sei/config/tmp_genesis.json ~/.sei/config/genesis.json
 cat ~/.sei/config/genesis.json | jq '.consensus_params["block"]["max_gas"]="35000000"' > ~/.sei/config/tmp_genesis.json && mv ~/.sei/config/tmp_genesis.json ~/.sei/config/genesis.json
 cat ~/.sei/config/genesis.json | jq '.app_state["staking"]["params"]["max_voting_power_ratio"]="1.000000000000000000"' > ~/.sei/config/tmp_genesis.json && mv ~/.sei/config/tmp_genesis.json ~/.sei/config/genesis.json
+cat ~/.sei/config/genesis.json | jq '.app_state["bank"]["denom_metadata"]=[{"denom_units":[{"denom":"UATOM","exponent":6,"aliases":["UATOM"]}],"base":"uatom","display":"uatom","name":"UATOM","symbol":"UATOM"}]' > ~/.sei/config/tmp_genesis.json && mv ~/.sei/config/tmp_genesis.json ~/.sei/config/genesis.json
 
 # Use the Python command to get the dates
 START_DATE=$($PYTHON_CMD -c "from datetime import datetime; print(datetime.now().strftime('%Y-%m-%d'))")
@@ -111,16 +112,10 @@ fi
 
 ~/go/bin/seid config keyring-backend test
 
-fund() {
-  echo "Initializing chain..."
-  sleep 3 # Wait for chain to be ready instead...
-  ~/go/bin/seid tx evm send 0xF87A299e6bC7bEba58dbBe5a5Aa21d49bCD16D52 100000000000000000 --from admin
-}
-
-sd 'occ-enabled =.*' 'occ-enabled = true' "$APP_PATH"
-sd '\[evm\]' "[evm]\nlive_evm_tracer = \"firehose\"\nlive_evm_tracer_chain_id = 713715" "$APP_PATH"
-
-fund &
+if [ $NO_RUN = 1 ]; then
+  echo "No run flag set, exiting without starting the chain"
+  exit 0
+fi
 
 # start the chain with log tracing
 GORACE="log_path=/tmp/race/seid_race" ~/go/bin/seid start --trace --chain-id sei-chain --log_level warn

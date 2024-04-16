@@ -13,6 +13,11 @@ func (k *Keeper) SetAddressMapping(ctx sdk.Context, seiAddress sdk.AccAddress, e
 	if !k.accountKeeper.HasAccount(ctx, seiAddress) {
 		k.accountKeeper.SetAccount(ctx, k.accountKeeper.NewAccountWithAddress(ctx, seiAddress))
 	}
+	ctx.EventManager().EmitEvent(sdk.NewEvent(
+		types.EventTypeAddressAssociated,
+		sdk.NewAttribute(types.AttributeKeySeiAddress, seiAddress.String()),
+		sdk.NewAttribute(types.AttributeKeyEvmAddress, evmAddress.Hex()),
+	))
 }
 
 func (k *Keeper) DeleteAddressMapping(ctx sdk.Context, seiAddress sdk.AccAddress, evmAddress common.Address) {
@@ -40,8 +45,12 @@ func (k *Keeper) GetEVMAddressOrDefault(ctx sdk.Context, seiAddress sdk.AccAddre
 	return common.BytesToAddress(seiAddress)
 }
 
-func (k *Keeper) GetEVMAddressFromBech32OrDefault(ctx sdk.Context, seiAddress string) common.Address {
-	return k.GetEVMAddressOrDefault(ctx, sdk.MustAccAddressFromBech32(seiAddress))
+func (k *Keeper) GetEVMAddressFromBech32OrDefault(ctx sdk.Context, seiAddress string) (common.Address, error) {
+	seiAddr, err := sdk.AccAddressFromBech32(seiAddress)
+	if err != nil {
+		return common.Address{}, err
+	}
+	return k.GetEVMAddressOrDefault(ctx, seiAddr), nil
 }
 
 func (k *Keeper) GetSeiAddress(ctx sdk.Context, evmAddress common.Address) (sdk.AccAddress, bool) {
