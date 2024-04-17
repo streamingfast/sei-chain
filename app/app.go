@@ -625,12 +625,7 @@ func New(
 	}
 
 	if app.evmRPCConfig.LiveEVMTracer != "" {
-		// PR_REVIEW_NOTE: So I moved this code from `ProcessBlock` and there, I had access to `ctx` so the code was actually looking
-		//                 like `evmtypes.DefaultChainConfig().EthereumConfig(app.EvmKeeper.ChainID(ctx))`. But here, I don't have access to `ctx`
-		//                 Is there another mean to get the EVM chainID from here? I need it to call `OnSeiBlockchainInit` on the logger,
-		//                 so another solution would be to call this one later when EVM chainID is known. Last resort, we have a sync.Once
-		//                 that we can use to call it only once.
-		chainConfig := evmtypes.DefaultChainConfig().EthereumConfig(big.NewInt(int64(app.evmRPCConfig.LiveEVMTracerChainID)))
+		chainConfig := evmtypes.DefaultChainConfig().EthereumConfig(app.EvmKeeper.ChainID())
 		evmTracer, err := evmtracers.NewBlockchainTracer(evmtracers.GlobalLiveTracerRegistry, app.evmRPCConfig.LiveEVMTracer, chainConfig)
 		if err != nil {
 			panic(fmt.Sprintf("error creating EVM tracer due to %s", err))

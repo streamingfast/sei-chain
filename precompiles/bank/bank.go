@@ -10,7 +10,6 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/vm"
 	pcommon "github.com/sei-protocol/sei-chain/precompiles/common"
 	"github.com/sei-protocol/sei-chain/utils"
@@ -214,46 +213,28 @@ func (p Precompile) sendNative(ctx sdk.Context, method *abi.Method, args []inter
 		return nil, err
 	}
 
-	usei, wei, err := pcommon.HandlePaymentUseiWei(ctx, p.evmKeeper.GetSeiAddressOrDefault(ctx, p.address), senderSeiAddr, value, p.bankKeeper)
+	precompiledSeiAddr := p.evmKeeper.GetSeiAddressOrDefault(ctx, p.address)
+
+	usei, wei, err := pcommon.HandlePaymentUseiWei(ctx, precompiledSeiAddr, senderSeiAddr, value, p.bankKeeper)
 	if err != nil {
 		return nil, err
 	}
 
-	if hooks := tracers.GetCtxEthTracingHooks(ctx); hooks != nil && hooks.OnBalanceChange != nil && !wei.IsZero() {
-		// Precompile address got wei removed from it
-		newBalance := p.bankKeeper.GetWeiBalance(ctx, p.evmKeeper.GetSeiAddressOrDefault(ctx, p.address)).BigInt()
-		oldBalance := new(big.Int).Add(newBalance, wei.BigInt())
-
-		hooks.OnBalanceChange(p.address, oldBalance, newBalance, tracing.BalanceChangeTransfer)
-
-		// Sender received wei from the precompile address
-		newBalance = p.bankKeeper.GetWeiBalance(ctx, senderSeiAddr).BigInt()
-		oldBalance = new(big.Int).Sub(newBalance, wei.BigInt())
-
-		hooks.OnBalanceChange(caller, oldBalance, newBalance, tracing.BalanceChangeTransfer)
+	if hooks := tracers.GetCtxEthTracingHooks(ctx); hooks != nil && hooks.OnBalanceChange != nil && (value.Sign() != 0) {
+		tracers.TraceTransferEVMValue(ctx, hooks, p.bankKeeper, precompiledSeiAddr, p.address, senderSeiAddr, caller, value)
 	}
 
 	if err := p.bankKeeper.SendCoinsAndWei(ctx, senderSeiAddr, receiverSeiAddr, usei, wei); err != nil {
 		return nil, err
 	}
 
-	if hooks := tracers.GetCtxEthTracingHooks(ctx); hooks != nil && hooks.OnBalanceChange != nil && !wei.IsZero() {
-		// Sender address got wei removed from it
-		newBalance := p.bankKeeper.GetWeiBalance(ctx, senderSeiAddr).BigInt()
-		oldBalance := new(big.Int).Add(newBalance, wei.BigInt())
-
-		hooks.OnBalanceChange(caller, oldBalance, newBalance, tracing.BalanceChangeTransfer)
-
-		// Receiver received wei from the sender address
-		evmReceiverAddr, err := p.evmKeeper.GetEVMAddressFromBech32OrDefault(ctx, receiverAddr)
-		if err != nil {
-			panic(fmt.Errorf("failed to get evm address from bech32, this shouldn't happen because SendCoinsAndWei worked: %w", err))
+	if hooks := tracers.GetCtxEthTracingHooks(ctx); hooks != nil && hooks.OnBalanceChange != nil && (value.Sign() != 0) {
+		receveirEvmAddr, found := p.evmKeeper.GetEVMAddress(ctx, receiverSeiAddr)
+		if !found {
+			return nil, fmt.Errorf("sei address %s is not associated, this shouldn't happen at this point since SendCoinsAndWei above worked", receiverSeiAddr)
 		}
 
-		newBalance = p.bankKeeper.GetWeiBalance(ctx, receiverSeiAddr).BigInt()
-		oldBalance = new(big.Int).Sub(newBalance, wei.BigInt())
-
-		hooks.OnBalanceChange(evmReceiverAddr, oldBalance, newBalance, tracing.BalanceChangeTransfer)
+		tracers.TraceTransferEVMValue(ctx, hooks, p.bankKeeper, senderSeiAddr, caller, receiverSeiAddr, receveirEvmAddr, value)
 	}
 
 	return method.Outputs.Pack(true)

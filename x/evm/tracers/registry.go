@@ -1,8 +1,5 @@
 package tracers
 
-// PR_REVIEW_NOTE: I defined a global registry to make it easy to register tracer.
-// Let me know if you guys prefer to not have a global registry and instead register
-// tracers explicitly, maybe in the `app/app.go` file.
 var GlobalLiveTracerRegistry = NewLiveTracerRegistry()
 
 type LiveTracerRegistry interface {

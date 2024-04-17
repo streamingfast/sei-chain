@@ -56,18 +56,8 @@ type Config struct {
 	// The EVM tracer to use when doing node synchronization, applies to
 	// all block produced but traces only EVM transactions.
 	//
-	// Refer to <TBC> for registered tracers
-	//
-	// PR_REVIEW_NOTE: It his an acceptable way of documenting the available tracers?
-	// PR_REVIEW_NOTE: This section renders as `[evm]` in config but is named EVMRPC on top,
-	//                 is live tracing of block synchronization should be here? Maybe "higher"
-	//                 in the config hierarchy? We might think also about a way that later, we could
-	//                 different trace active for Cosmos related function and EVM related function.
+	// Refer to x/evm/tracers/registry.go#GlobalLiveTracerRegistry for registered tracers.
 	LiveEVMTracer string `mapstructure:"live_evm_tracer"`
-
-	// PR_REVIEW_NOTE: This is a hackish workaround because I didn't how to get it in `app/app.go#New`,
-	//                 this will not be part of the final PR.
-	LiveEVMTracerChainID int `mapstructure:"live_evm_tracer_chain_id"`
 
 	// list of CORS allowed origins, separated by comma
 	CORSOrigins string `mapstructure:"cors_origins"`
@@ -102,6 +92,7 @@ var DefaultConfig = Config{
 	IdleTimeout:          rpc.DefaultHTTPTimeouts.IdleTimeout,
 	SimulationGasLimit:   10_000_000, // 10M
 	SimulationEVMTimeout: 60 * time.Second,
+	LiveEVMTracer:        "",
 	CORSOrigins:          "*",
 	WSOrigins:            "*",
 	FilterTimeout:        120 * time.Second,
@@ -122,6 +113,7 @@ const (
 	flagIdleTimeout          = "evm.idle_timeout"
 	flagSimulationGasLimit   = "evm.simulation_gas_limit"
 	flagSimulationEVMTimeout = "evm.simulation_evm_timeout"
+	flagLiveEVMTracer        = "evm.live_evm_tracer"
 	flagCORSOrigins          = "evm.cors_origins"
 	flagWSOrigins            = "evm.ws_origins"
 	flagFilterTimeout        = "evm.filter_timeout"
@@ -129,9 +121,6 @@ const (
 	flagCheckTxTimeout       = "evm.checktx_timeout"
 	flagSlow                 = "evm.slow"
 	flagDenyList             = "evm.deny_list"
-	flagLiveEVMTracer        = "evm.live_evm_tracer"
-	// PR_REVIEW_NOTE: This is going to go away, temporary hack
-	flagLiveEVMTracerChainID = "evm.live_evm_tracer_chain_id"
 )
 
 func ReadConfig(opts servertypes.AppOptions) (Config, error) {
@@ -187,6 +176,11 @@ func ReadConfig(opts servertypes.AppOptions) (Config, error) {
 			return cfg, err
 		}
 	}
+	if v := opts.Get(flagLiveEVMTracer); v != nil {
+		if cfg.LiveEVMTracer, err = cast.ToStringE(v); err != nil {
+			return cfg, err
+		}
+	}
 	if v := opts.Get(flagCORSOrigins); v != nil {
 		if cfg.CORSOrigins, err = cast.ToStringE(v); err != nil {
 			return cfg, err
@@ -219,16 +213,6 @@ func ReadConfig(opts servertypes.AppOptions) (Config, error) {
 	}
 	if v := opts.Get(flagDenyList); v != nil {
 		if cfg.DenyList, err = cast.ToStringSliceE(v); err != nil {
-			return cfg, err
-		}
-	}
-	if v := opts.Get(flagLiveEVMTracer); v != nil {
-		if cfg.LiveEVMTracer, err = cast.ToStringE(v); err != nil {
-			return cfg, err
-		}
-	}
-	if v := opts.Get(flagLiveEVMTracerChainID); v != nil {
-		if cfg.LiveEVMTracerChainID, err = cast.ToIntE(v); err != nil {
 			return cfg, err
 		}
 	}

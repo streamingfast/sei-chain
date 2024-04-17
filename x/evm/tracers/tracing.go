@@ -18,12 +18,8 @@ import (
 // by the registry.
 type BlockchainTracerFactory = func(tracerURL *url.URL) (*tracing.Hooks, error)
 
-// PR_REVIEW_NOTE: I defined the tracer identifier to be either a plain string or an URL of the form <tracer_id>://<tracer_specific_data>,
-//
-//	this way a tracer can be configured for example using some query parameters as "config" value. We use that in a lot
-//	of our project and found it's a pretty good way to configure "generic" dependency.
-//
-//	We could switch to plain string if you prefer.
+// NewBlockchainTracer creates a new [tracing.Hooks] struct that is used to trace blocks and transactions
+// for EVM needs. The tracer is instansiated by the provided URL and registered in the registry.
 func NewBlockchainTracer(registry LiveTracerRegistry, tracerIdentifier string, chainConfig *params.ChainConfig) (*tracing.Hooks, error) {
 	tracerURL, err := url.Parse(tracerIdentifier)
 	if err != nil {
