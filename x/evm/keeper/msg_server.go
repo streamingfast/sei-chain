@@ -59,9 +59,10 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 	ctx = ctx.WithGasMeter(sdk.NewInfiniteGasMeter())
 
 	stateDB := state.NewDBImpl(ctx, &server, false)
+	stateDB.AddSurplus(msg.Derived.AnteSurplus)
 	tx, _ := msg.AsTransaction()
-	ctx, gp := server.getGasPool(ctx)
-	emsg := server.getEVMMessage(ctx, tx, msg.Derived.SenderEVMAddr)
+	emsg := server.GetEVMMessage(ctx, tx, msg.Derived.SenderEVMAddr)
+	gp := server.GetGasPool()
 
 	evmInstance, err := server.getEVM(ctx, emsg, stateDB, gp)
 	if err != nil {
@@ -153,7 +154,7 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 		originalGasMeter.ConsumeGas(adjustedGasUsed.TruncateInt().Uint64(), "evm transaction")
 	}()
 
-	st := core.NewStateTransition(evmInstance, emsg, &gp)
+	st := core.NewStateTransition(evmInstance, emsg, &gp, true) // fee already charged in ante handler
 	transitionRes, applyErr := st.TransitionDb()
 
 	serverRes = &types.MsgEVMTransactionResponse{
@@ -192,11 +193,11 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 	return
 }
 
-func (k *Keeper) getGasPool(ctx sdk.Context) (sdk.Context, core.GasPool) {
-	return ctx, math.MaxUint64
+func (k *Keeper) GetGasPool() core.GasPool {
+	return math.MaxUint64
 }
 
-func (server msgServer) getEVMMessage(ctx sdk.Context, tx *ethtypes.Transaction, sender common.Address) *core.Message {
+func (k *Keeper) GetEVMMessage(ctx sdk.Context, tx *ethtypes.Transaction, sender common.Address) *core.Message {
 	msg := &core.Message{
 		Nonce:             tx.Nonce(),
 		GasLimit:          tx.Gas(),
@@ -213,7 +214,7 @@ func (server msgServer) getEVMMessage(ctx sdk.Context, tx *ethtypes.Transaction,
 		From:              sender,
 	}
 	// If baseFee provided, set gasPrice to effectiveGasPrice.
-	baseFee := server.GetBaseFee(ctx)
+	baseFee := k.GetBaseFee(ctx)
 	if baseFee != nil {
 		msg.GasPrice = cmath.BigMin(msg.GasPrice.Add(msg.GasTipCap, baseFee), msg.GasFeeCap)
 	}
@@ -225,7 +226,7 @@ func (server msgServer) getEVM(ctx sdk.Context, msg *core.Message, stateDB *stat
 	if err != nil {
 		return nil, err
 	}
-	cfg := types.DefaultChainConfig().EthereumConfig(server.ChainID(ctx))
+	cfg := types.DefaultChainConfig().EthereumConfig(server.ChainID())
 	txCtx := core.NewEVMTxContext(msg)
 
 	hooks := evmtracers.GetCtxEthTracingHooks(ctx)

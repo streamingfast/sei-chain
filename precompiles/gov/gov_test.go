@@ -45,7 +45,7 @@ func TestVoteDeposit(t *testing.T) {
 		Data:     args,
 		Nonce:    0,
 	}
-	chainID := k.ChainID(ctx)
+	chainID := k.ChainID()
 	chainCfg := evmtypes.DefaultChainConfig()
 	ethCfg := chainCfg.EthereumConfig(chainID)
 	blockNum := big.NewInt(ctx.BlockHeight())
@@ -57,10 +57,11 @@ func TestVoteDeposit(t *testing.T) {
 	req, err := evmtypes.NewMsgEVMTransaction(txwrapper)
 	require.Nil(t, err)
 
-	_, evmAddr := testkeeper.PrivateKeyToAddresses(privKey)
+	seiAddr, evmAddr := testkeeper.PrivateKeyToAddresses(privKey)
+	k.SetAddressMapping(ctx, seiAddr, evmAddr)
 	amt := sdk.NewCoins(sdk.NewCoin(k.GetBaseDenom(ctx), sdk.NewInt(200000000)))
 	require.Nil(t, k.BankKeeper().MintCoins(ctx, evmtypes.ModuleName, sdk.NewCoins(sdk.NewCoin(k.GetBaseDenom(ctx), sdk.NewInt(200000000)))))
-	require.Nil(t, k.BankKeeper().SendCoinsFromModuleToAccount(ctx, evmtypes.ModuleName, evmAddr[:], amt))
+	require.Nil(t, k.BankKeeper().SendCoinsFromModuleToAccount(ctx, evmtypes.ModuleName, seiAddr, amt))
 
 	msgServer := keeper.NewMsgServerImpl(k)
 
@@ -89,7 +90,7 @@ func TestVoteDeposit(t *testing.T) {
 			Data:     args,
 			Nonce:    0,
 		}
-		chainID := k.ChainID(ctx)
+		chainID := k.ChainID()
 		chainCfg := evmtypes.DefaultChainConfig()
 		ethCfg := chainCfg.EthereumConfig(chainID)
 		blockNum := big.NewInt(ctx.BlockHeight())
@@ -101,10 +102,11 @@ func TestVoteDeposit(t *testing.T) {
 		req, err := evmtypes.NewMsgEVMTransaction(txwrapper)
 		require.Nil(t, err)
 
-		_, evmAddr := testkeeper.PrivateKeyToAddresses(privKey)
+		seiAddr, evmAddr := testkeeper.PrivateKeyToAddresses(privKey)
+		k.SetAddressMapping(ctx, seiAddr, evmAddr)
 		amt := sdk.NewCoins(sdk.NewCoin(k.GetBaseDenom(ctx), sdk.NewInt(200000000)))
 		require.Nil(t, k.BankKeeper().MintCoins(ctx, evmtypes.ModuleName, sdk.NewCoins(sdk.NewCoin(k.GetBaseDenom(ctx), sdk.NewInt(200000000)))))
-		require.Nil(t, k.BankKeeper().SendCoinsFromModuleToAccount(ctx, evmtypes.ModuleName, evmAddr[:], amt))
+		require.Nil(t, k.BankKeeper().SendCoinsFromModuleToAccount(ctx, evmtypes.ModuleName, seiAddr, amt))
 
 		msgServer := keeper.NewMsgServerImpl(k)
 
@@ -113,7 +115,7 @@ func TestVoteDeposit(t *testing.T) {
 		require.Nil(t, err)
 		require.Empty(t, res.VmError)
 
-		v, found := testApp.GovKeeper.GetVote(ctx, proposal.ProposalId, evmAddr[:])
+		v, found := testApp.GovKeeper.GetVote(ctx, proposal.ProposalId, seiAddr)
 		require.True(t, found)
 		require.Equal(t, 1, len(v.Options))
 		require.Equal(t, opt, v.Options[0].Option)

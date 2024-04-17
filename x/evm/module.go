@@ -185,7 +185,7 @@ func (am AppModule) BeginBlock(ctx sdk.Context, _ abci.RequestBeginBlock) {
 				panic(err)
 			}
 			statedb := state.NewDBImpl(ctx, am.keeper, false)
-			vmenv := vm.NewEVM(*blockCtx, vm.TxContext{}, statedb, types.DefaultChainConfig().EthereumConfig(am.keeper.ChainID(ctx)), vm.Config{})
+			vmenv := vm.NewEVM(*blockCtx, vm.TxContext{}, statedb, types.DefaultChainConfig().EthereumConfig(am.keeper.ChainID()), vm.Config{})
 			core.ProcessBeaconBlockRoot(*beaconRoot, vmenv, statedb)
 			_, err = statedb.Finalize()
 			if err != nil {
@@ -243,13 +243,16 @@ func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.Val
 		}
 		surplus = surplus.Add(deferredInfo.Surplus)
 	}
+
 	surplusUsei, surplusWei := state.SplitUseiWeiAmount(surplus.BigInt())
 	evmModuleAddress := am.keeper.AccountKeeper().GetModuleAddress(types.ModuleName)
+
 	if surplusUsei.GT(sdk.ZeroInt()) {
 		if err := am.keeper.BankKeeper().AddCoins(ctx, evmModuleAddress, sdk.NewCoins(sdk.NewCoin(am.keeper.GetBaseDenom(ctx), surplusUsei)), true); err != nil {
 			ctx.Logger().Error("failed to send usei surplus of %s to EVM module account", surplusUsei)
 		}
-
+	}
+	if surplusWei.GT(sdk.ZeroInt()) {
 		if err := am.keeper.BankKeeper().AddWei(ctx, evmModuleAddress, surplusWei); err != nil {
 			ctx.Logger().Error("failed to send wei surplus of %s to EVM module account", surplusWei)
 		}
