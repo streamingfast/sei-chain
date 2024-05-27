@@ -124,6 +124,9 @@ func newSeiFirehoseTracer(tracerURL *url.URL) (*seitracing.Hooks, error) {
 		OnSeiBlockStart:     tracer.OnSeiBlockStart,
 		OnSeiBlockEnd:       tracer.OnBlockEnd,
 
+		OnSeiSystemCallStart: tracer.OnSystemCallStart,
+		OnSeiSystemCallEnd:   tracer.OnSystemCallEnd,
+
 		GetTxTracer: func(txIndex int) sdk.TxTracer {
 			tracer.blockReorderOrdinalOnce.Do(func() {
 				tracer.blockReorderOrdinal = true
@@ -524,15 +527,15 @@ func (f *Firehose) reorderCallOrdinals(call *pbeth.Call, ordinalBase uint64) (or
 	return call.EndOrdinal
 }
 
-func (f *Firehose) OnBeaconBlockRootStart(root common.Hash) {
-	firehoseInfo("system call start (for=%s)", "beacon_block_root")
+func (f *Firehose) OnSystemCallStart() {
+	firehoseInfo("system call start (for=%s)")
 	f.ensureInBlockAndNotInTrx()
 
 	f.inSystemCall = true
 	f.transaction = &pbeth.TransactionTrace{}
 }
 
-func (f *Firehose) OnBeaconBlockRootEnd() {
+func (f *Firehose) OnSystemCallEnd() {
 	f.ensureInBlockAndInTrx()
 	f.ensureInSystemCall()
 
@@ -1328,59 +1331,74 @@ func (f *Firehose) ensureNotInBlock(callerSkip int) {
 // network which pulls this branch.
 var _ = new(Firehose).ensureNotInBlock
 
+const (
+	// This is the number of frames to skip for correctly showing the call-site of the none
+	// into the tracer code. We expect caller to be direct, e.g. like:
+	//
+	//  function onChange(){
+	//	   f.ensureInBlockAndInTrx()
+	//
+	//     // ...
+	//  }
+	//
+	// Using this value as caller frame skip, this will yield where the `onChange` function
+	// was called.
+	firehoseFrameCount = 3
+)
+
 func (f *Firehose) ensureInBlockAndInTrx() {
-	f.ensureInBlock(2)
+	f.ensureInBlock(firehoseFrameCount)
 
 	if f.transaction == nil {
-		f.panicInvalidState("caller expected to be in transaction state but we were not, this is a bug", 2)
+		f.panicInvalidState("caller expected to be in transaction state but we were not, this is a bug", firehoseFrameCount)
 	}
 }
 
 func (f *Firehose) ensureInBlockAndNotInTrx() {
-	f.ensureInBlock(2)
+	f.ensureInBlock(firehoseFrameCount)
 
 	if f.transaction != nil {
-		f.panicInvalidState("caller expected to not be in transaction state but we were, this is a bug", 2)
+		f.panicInvalidState("caller expected to not be in transaction state but we were, this is a bug", firehoseFrameCount)
 	}
 }
 
 func (f *Firehose) ensureInBlockAndNotInTrxAndNotInCall() {
-	f.ensureInBlock(2)
+	f.ensureInBlock(firehoseFrameCount)
 
 	if f.transaction != nil {
-		f.panicInvalidState("caller expected to not be in transaction state but we were, this is a bug", 2)
+		f.panicInvalidState("caller expected to not be in transaction state but we were, this is a bug", firehoseFrameCount)
 	}
 
 	if f.callStack.HasActiveCall() {
-		f.panicInvalidState("caller expected to not be in call state but we were, this is a bug", 2)
+		f.panicInvalidState("caller expected to not be in call state but we were, this is a bug", firehoseFrameCount)
 	}
 }
 
 func (f *Firehose) ensureInBlockOrTrx() {
 	if f.transaction == nil && f.block == nil {
-		f.panicInvalidState("caller expected to be in either block or  transaction state but we were not, this is a bug", 2)
+		f.panicInvalidState("caller expected to be in either block or  transaction state but we were not, this is a bug", firehoseFrameCount)
 	}
 }
 
 func (f *Firehose) ensureInBlockAndInTrxAndInCall() {
 	if f.transaction == nil || f.block == nil {
-		f.panicInvalidState("caller expected to be in block and in transaction but we were not, this is a bug", 2)
+		f.panicInvalidState("caller expected to be in block and in transaction but we were not, this is a bug", firehoseFrameCount)
 	}
 
 	if !f.callStack.HasActiveCall() {
-		f.panicInvalidState("caller expected to be in call state but we were not, this is a bug", 2)
+		f.panicInvalidState("caller expected to be in call state but we were not, this is a bug", firehoseFrameCount)
 	}
 }
 
 func (f *Firehose) ensureInCall() {
 	if f.block == nil {
-		f.panicInvalidState("caller expected to be in call state but we were not, this is a bug", 2)
+		f.panicInvalidState("caller expected to be in call state but we were not, this is a bug", firehoseFrameCount)
 	}
 }
 
 func (f *Firehose) ensureInSystemCall() {
 	if !f.inSystemCall {
-		f.panicInvalidState("call expected to be in system call state but we were not, this is a bug", 2)
+		f.panicInvalidState("call expected to be in system call state but we were not, this is a bug", firehoseFrameCount)
 	}
 }
 
@@ -1397,6 +1415,8 @@ func (f *Firehose) panicInvalidState(msg string, callerSkip int) string {
 	if f.transaction != nil {
 		msg += fmt.Sprintf(" in transaction %s", hex.EncodeToString(f.transaction.Hash))
 	}
+
+	debug.PrintStack()
 
 	panic(fmt.Errorf("%s (caller=%s, init=%t, inBlock=%t, inTransaction=%t, inCall=%t)", msg, caller, f.chainConfig != nil, f.block != nil, f.transaction != nil, f.callStack.HasActiveCall()))
 }
