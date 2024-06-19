@@ -14,9 +14,11 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/vm"
+
 	pcommon "github.com/sei-protocol/sei-chain/precompiles/common"
 	"github.com/sei-protocol/sei-chain/utils"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
+	"github.com/sei-protocol/sei-chain/x/evm/types"
 )
 
 const (
@@ -130,17 +132,13 @@ func (p Precompile) GetName() string {
 }
 
 func (p Precompile) RunAndCalculateGas(evm *vm.EVM, caller common.Address, callingContract common.Address, input []byte, suppliedGas uint64, value *big.Int, logger *tracing.Hooks, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	operation := "wasmd_unknown"
 	defer func() {
-		if err != nil {
-			evm.StateDB.(*state.DBImpl).SetPrecompileError(err)
-		}
+		pcommon.HandlePrecompileError(err, evm, operation)
 	}()
 	ctx, method, args, err := p.Prepare(evm, input)
 	if err != nil {
 		return nil, 0, err
-	}
-	if method.Name != QueryMethod && !ctx.IsEVM() {
-		return nil, 0, errors.New("sei does not support CW->EVM->CW call pattern")
 	}
 	gasMultipler := p.evmKeeper.GetPriorityNormalizer(ctx)
 	gasLimitBigInt := sdk.NewDecFromInt(sdk.NewIntFromUint64(suppliedGas)).Mul(gasMultipler).TruncateInt().BigInt()
@@ -153,13 +151,14 @@ func (p Precompile) RunAndCalculateGas(evm *vm.EVM, caller common.Address, calli
 		defer func() { logger.OnGasChange(suppliedGas, remainingGas, tracing.GasChangeCallPrecompiledContract) }()
 	}
 
+	operation = method.Name
 	switch method.Name {
 	case InstantiateMethod:
-		return p.instantiate(ctx, method, caller, callingContract, args, value, readOnly)
+		return p.instantiate(ctx, method, caller, callingContract, args, value, readOnly, evm)
 	case ExecuteMethod:
-		return p.execute(ctx, method, caller, callingContract, args, value, readOnly)
+		return p.execute(ctx, method, caller, callingContract, args, value, readOnly, evm)
 	case ExecuteBatchMethod:
-		return p.executeBatch(ctx, method, caller, callingContract, args, value, readOnly)
+		return p.executeBatch(ctx, method, caller, callingContract, args, value, readOnly, evm)
 	case QueryMethod:
 		return p.query(ctx, method, args, value)
 	}
@@ -170,7 +169,7 @@ func (p Precompile) Run(*vm.EVM, common.Address, common.Address, []byte, *big.In
 	panic("static gas Run is not implemented for dynamic gas precompile")
 }
 
-func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller common.Address, callingContract common.Address, args []interface{}, value *big.Int, readOnly bool) (ret []byte, remainingGas uint64, rerr error) {
+func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller common.Address, callingContract common.Address, args []interface{}, value *big.Int, readOnly bool, evm *vm.EVM) (ret []byte, remainingGas uint64, rerr error) {
 	defer func() {
 		if err := recover(); err != nil {
 			ret = nil
@@ -196,7 +195,7 @@ func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller comm
 	codeID := args[0].(uint64)
 	creatorAddr, found := p.evmKeeper.GetSeiAddress(ctx, caller)
 	if !found {
-		rerr = fmt.Errorf("creator %s is not associated", caller.Hex())
+		rerr = types.NewAssociationMissingErr(caller.Hex())
 		return
 	}
 	var adminAddr sdk.AccAddress
@@ -253,17 +252,19 @@ func (p Precompile) instantiate(ctx sdk.Context, method *abi.Method, caller comm
 		}
 	}
 
+	ctx = ctx.WithEvmEventManager(sdk.NewEVMEventManager())
 	addr, data, err := p.wasmdKeeper.Instantiate(ctx, codeID, creatorAddr, adminAddr, msg, label, coins)
 	if err != nil {
 		rerr = err
 		return
 	}
+	AddEvents(ctx, evm)
 	ret, rerr = method.Outputs.Pack(addr.String(), data)
 	remainingGas = pcommon.GetRemainingGas(ctx, p.evmKeeper)
 	return
 }
 
-func (p Precompile) executeBatch(ctx sdk.Context, method *abi.Method, caller common.Address, callingContract common.Address, args []interface{}, value *big.Int, readOnly bool) (ret []byte, remainingGas uint64, rerr error) {
+func (p Precompile) executeBatch(ctx sdk.Context, method *abi.Method, caller common.Address, callingContract common.Address, args []interface{}, value *big.Int, readOnly bool, evm *vm.EVM) (ret []byte, remainingGas uint64, rerr error) {
 	defer func() {
 		if err := recover(); err != nil {
 			ret = nil
@@ -335,7 +336,7 @@ func (p Precompile) executeBatch(ctx sdk.Context, method *abi.Method, caller com
 		}
 		senderAddr, senderAssociated := p.evmKeeper.GetSeiAddress(ctx, caller)
 		if !senderAssociated {
-			rerr = fmt.Errorf("sender %s is not associated", caller.Hex())
+			rerr = types.NewAssociationMissingErr(caller.Hex())
 			return
 		}
 		msg := executeMsg.Msg
@@ -377,11 +378,13 @@ func (p Precompile) executeBatch(ctx sdk.Context, method *abi.Method, caller com
 			return
 		}
 
+		ctx = ctx.WithEvmEventManager(sdk.NewEVMEventManager())
 		res, err := p.wasmdKeeper.Execute(ctx, contractAddr, senderAddr, msg, coins)
 		if err != nil {
 			rerr = err
 			return
 		}
+		AddEvents(ctx, evm)
 		responses = append(responses, res)
 	}
 	if valueCopy != nil && valueCopy.Sign() != 0 {
@@ -393,7 +396,7 @@ func (p Precompile) executeBatch(ctx sdk.Context, method *abi.Method, caller com
 	return
 }
 
-func (p Precompile) execute(ctx sdk.Context, method *abi.Method, caller common.Address, callingContract common.Address, args []interface{}, value *big.Int, readOnly bool) (ret []byte, remainingGas uint64, rerr error) {
+func (p Precompile) execute(ctx sdk.Context, method *abi.Method, caller common.Address, callingContract common.Address, args []interface{}, value *big.Int, readOnly bool, evm *vm.EVM) (ret []byte, remainingGas uint64, rerr error) {
 	defer func() {
 		if err := recover(); err != nil {
 			ret = nil
@@ -428,7 +431,7 @@ func (p Precompile) execute(ctx sdk.Context, method *abi.Method, caller common.A
 	}
 	senderAddr, found := p.evmKeeper.GetSeiAddress(ctx, caller)
 	if !found {
-		rerr = fmt.Errorf("sender %s is not associated", caller.Hex())
+		rerr = types.NewAssociationMissingErr(caller.Hex())
 		return
 	}
 	msg := args[1].([]byte)
@@ -471,11 +474,13 @@ func (p Precompile) execute(ctx sdk.Context, method *abi.Method, caller common.A
 			return
 		}
 	}
+	ctx = ctx.WithEvmEventManager(sdk.NewEVMEventManager())
 	res, err := p.wasmdKeeper.Execute(ctx, contractAddr, senderAddr, msg, coins)
 	if err != nil {
 		rerr = err
 		return
 	}
+	AddEvents(ctx, evm)
 	ret, rerr = method.Outputs.Pack(res)
 	remainingGas = pcommon.GetRemainingGas(ctx, p.evmKeeper)
 	return
@@ -523,4 +528,10 @@ func (p Precompile) query(ctx sdk.Context, method *abi.Method, args []interface{
 	ret, rerr = method.Outputs.Pack(res)
 	remainingGas = pcommon.GetRemainingGas(ctx, p.evmKeeper)
 	return
+}
+
+func AddEvents(ctx sdk.Context, evm *vm.EVM) {
+	for _, e := range ctx.EVMEventManager().Events() {
+		evm.StateDB.AddLog(e)
+	}
 }
