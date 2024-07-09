@@ -225,14 +225,13 @@ func (am AppModule) EndBlock(ctx sdk.Context, _ abci.RequestEndBlock) []abci.Val
 	} else {
 		coinbase = am.keeper.AccountKeeper().GetModuleAddress(authtypes.FeeCollectorName)
 	}
-	evmTxDeferredInfoList := am.keeper.GetEVMTxDeferredInfo(ctx)
+	evmTxDeferredInfoList := am.keeper.GetAllEVMTxDeferredInfo(ctx)
 	evmHooks := tracers.GetCtxEthTracingHooks(ctx)
 
 	var coinbaseEVMAddress common.Address
 	if evmHooks != nil {
 		coinbaseEVMAddress = am.keeper.GetEVMAddressOrDefault(ctx, coinbase)
 	}
-
 	denom := am.keeper.GetBaseDenom(ctx)
 	surplus := am.keeper.GetAnteSurplusSum(ctx)
 	for _, deferredInfo := range evmTxDeferredInfoList {

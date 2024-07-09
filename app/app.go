@@ -147,12 +147,6 @@ import (
 
 	"github.com/sei-protocol/sei-chain/utils/metrics"
 
-	dexmodule "github.com/sei-protocol/sei-chain/x/dex"
-	dexcache "github.com/sei-protocol/sei-chain/x/dex/cache"
-	dexmodulekeeper "github.com/sei-protocol/sei-chain/x/dex/keeper"
-	dexmoduletypes "github.com/sei-protocol/sei-chain/x/dex/types"
-	dexutils "github.com/sei-protocol/sei-chain/x/dex/utils"
-
 	oraclemodule "github.com/sei-protocol/sei-chain/x/oracle"
 	oraclekeeper "github.com/sei-protocol/sei-chain/x/oracle/keeper"
 	oracletypes "github.com/sei-protocol/sei-chain/x/oracle/types"
@@ -224,7 +218,6 @@ var (
 		oraclemodule.AppModuleBasic{},
 		evm.AppModuleBasic{},
 		wasm.AppModuleBasic{},
-		dexmodule.AppModuleBasic{},
 		epochmodule.AppModuleBasic{},
 		tokenfactorymodule.AppModuleBasic{},
 		// this line is used by starport scaffolding # stargate/app/moduleBasic
@@ -243,7 +236,6 @@ var (
 		oracletypes.ModuleName:         nil,
 		wasm.ModuleName:                {authtypes.Burner},
 		evmtypes.ModuleName:            {authtypes.Minter, authtypes.Burner},
-		dexmoduletypes.ModuleName:      {authtypes.Burner},
 		tokenfactorytypes.ModuleName:   {authtypes.Minter, authtypes.Burner},
 		// this line is used by starport scaffolding # stargate/app/maccPerms
 	}
@@ -357,8 +349,6 @@ type App struct {
 	ScopedTransferKeeper capabilitykeeper.ScopedKeeper
 	ScopedWasmKeeper     capabilitykeeper.ScopedKeeper
 
-	DexKeeper dexmodulekeeper.Keeper
-
 	EpochKeeper epochmodulekeeper.Keeper
 
 	TokenFactoryKeeper tokenfactorykeeper.Keeper
@@ -382,10 +372,6 @@ type App struct {
 	metricCounter *map[string]float32
 
 	mounter func()
-
-	CheckTxMemState         *dexcache.MemState
-	ProcessProposalMemState *dexcache.MemState
-	MemState                *dexcache.MemState
 
 	HardForkManager *upgrades.HardForkManager
 
@@ -435,13 +421,12 @@ func New(
 		govtypes.StoreKey, paramstypes.StoreKey, ibchost.StoreKey, upgradetypes.StoreKey, feegrant.StoreKey,
 		evidencetypes.StoreKey, ibctransfertypes.StoreKey, capabilitytypes.StoreKey, oracletypes.StoreKey,
 		evmtypes.StoreKey, wasm.StoreKey,
-		dexmoduletypes.StoreKey,
 		epochmoduletypes.StoreKey,
 		tokenfactorytypes.StoreKey,
 		// this line is used by starport scaffolding # stargate/app/storeKey
 	)
 	tkeys := sdk.NewTransientStoreKeys(paramstypes.TStoreKey, evmtypes.TransientStoreKey)
-	memKeys := sdk.NewMemoryStoreKeys(capabilitytypes.MemStoreKey, dexmoduletypes.MemStoreKey, banktypes.DeferredCacheStoreKey, oracletypes.MemStoreKey)
+	memKeys := sdk.NewMemoryStoreKeys(capabilitytypes.MemStoreKey, banktypes.DeferredCacheStoreKey, oracletypes.MemStoreKey)
 
 	app := &App{
 		BaseApp:           bApp,
@@ -558,15 +543,7 @@ func New(
 		app.GetSubspace(epochmoduletypes.ModuleName),
 	).SetHooks(epochmoduletypes.NewMultiEpochHooks(
 		app.MintKeeper.Hooks()))
-	app.DexKeeper = *dexmodulekeeper.NewKeeper(
-		appCodec,
-		keys[dexmoduletypes.StoreKey],
-		memKeys[dexmoduletypes.MemStoreKey],
-		app.GetSubspace(dexmoduletypes.ModuleName),
-		app.EpochKeeper,
-		app.BankKeeper,
-		app.AccountKeeper,
-	)
+
 	app.TokenFactoryKeeper = tokenfactorykeeper.NewKeeper(
 		appCodec,
 		app.keys[tokenfactorytypes.StoreKey],
@@ -582,7 +559,6 @@ func New(
 	wasmOpts = append(
 		wasmbinding.RegisterCustomPlugins(
 			&app.OracleKeeper,
-			&app.DexKeeper,
 			&app.EpochKeeper,
 			&app.TokenFactoryKeeper,
 			&app.AccountKeeper,
@@ -682,8 +658,6 @@ func New(
 		aclOpts...,
 	)
 
-	app.DexKeeper.SetWasmKeeper(&app.WasmKeeper)
-	dexModule := dexmodule.NewAppModule(appCodec, app.DexKeeper, app.AccountKeeper, app.BankKeeper, app.WasmKeeper, app.GetBaseApp().TracingInfo)
 	epochModule := epochmodule.NewAppModule(appCodec, app.EpochKeeper, app.AccountKeeper, app.BankKeeper)
 
 	// register the proposal types
@@ -693,7 +667,6 @@ func New(
 		AddRoute(distrtypes.RouterKey, distr.NewCommunityPoolSpendProposalHandler(app.DistrKeeper)).
 		AddRoute(upgradetypes.RouterKey, upgrade.NewSoftwareUpgradeProposalHandler(app.UpgradeKeeper)).
 		AddRoute(ibcclienttypes.RouterKey, ibcclient.NewClientProposalHandler(app.IBCKeeper.ClientKeeper)).
-		AddRoute(dexmoduletypes.RouterKey, dexmodule.NewProposalHandler(app.DexKeeper)).
 		AddRoute(minttypes.RouterKey, mint.NewProposalHandler(app.MintKeeper)).
 		AddRoute(tokenfactorytypes.RouterKey, tokenfactorymodule.NewProposalHandler(app.TokenFactoryKeeper)).
 		AddRoute(acltypes.ModuleName, aclmodule.NewProposalHandler(app.AccessControlKeeper)).
@@ -771,7 +744,6 @@ func New(
 		wasm.NewAppModule(appCodec, &app.WasmKeeper, app.StakingKeeper, app.AccountKeeper, app.BankKeeper),
 		evm.NewAppModule(appCodec, &app.EvmKeeper),
 		transferModule,
-		dexModule,
 		epochModule,
 		tokenfactorymodule.NewAppModule(app.TokenFactoryKeeper, app.AccountKeeper, app.BankKeeper),
 		authzmodule.NewAppModule(appCodec, app.AuthzKeeper, app.AccountKeeper, app.BankKeeper, app.interfaceRegistry),
@@ -803,7 +775,6 @@ func New(
 		ibchost.ModuleName,
 		ibctransfertypes.ModuleName,
 		oracletypes.ModuleName,
-		dexmoduletypes.ModuleName,
 		evmtypes.ModuleName,
 		wasm.ModuleName,
 		tokenfactorytypes.ModuleName,
@@ -835,7 +806,6 @@ func New(
 		ibctransfertypes.ModuleName,
 		oracletypes.ModuleName,
 		epochmoduletypes.ModuleName,
-		dexmoduletypes.ModuleName,
 		evmtypes.ModuleName,
 		wasm.ModuleName,
 		tokenfactorytypes.ModuleName,
@@ -861,7 +831,6 @@ func New(
 		vestingtypes.ModuleName,
 		crisistypes.ModuleName,
 		ibchost.ModuleName,
-		dexmoduletypes.ModuleName,
 		genutiltypes.ModuleName,
 		evidencetypes.ModuleName,
 		ibctransfertypes.ModuleName,
@@ -898,7 +867,6 @@ func New(
 		wasm.NewAppModule(appCodec, &app.WasmKeeper, app.StakingKeeper, app.AccountKeeper, app.BankKeeper),
 		ibc.NewAppModule(app.IBCKeeper),
 		transferModule,
-		dexModule,
 		epochModule,
 		tokenfactorymodule.NewAppModule(app.TokenFactoryKeeper, app.AccountKeeper, app.BankKeeper),
 		// this line is used by starport scaffolding # stargate/app/appModule
@@ -915,10 +883,6 @@ func New(
 		app.MountMemoryStores(memKeys)
 	}
 	app.mounter()
-
-	app.CheckTxMemState = dexcache.NewMemState(app.GetMemKey(dexmoduletypes.MemStoreKey))
-	app.ProcessProposalMemState = dexcache.NewMemState(app.GetMemKey(dexmoduletypes.MemStoreKey))
-	app.MemState = dexcache.NewMemState(app.GetMemKey(dexmoduletypes.MemStoreKey))
 
 	// initialize BaseApp
 	app.SetInitChainer(app.InitChainer)
@@ -943,11 +907,9 @@ func New(
 			WasmConfig:          &wasmConfig,
 			WasmKeeper:          &app.WasmKeeper,
 			OracleKeeper:        &app.OracleKeeper,
-			DexKeeper:           &app.DexKeeper,
 			EVMKeeper:           &app.EvmKeeper,
 			TracingInfo:         app.GetBaseApp().TracingInfo,
 			AccessControlKeeper: &app.AccessControlKeeper,
-			CheckTxMemState:     app.CheckTxMemState,
 			LatestCtxGetter: func() sdk.Context {
 				return app.GetCheckCtx()
 			},
@@ -1005,6 +967,8 @@ func New(
 	// example: app.HardForkManager.RegisterHandler(myHandler)
 	app.HardForkManager = upgrades.NewHardForkManager(app.ChainID)
 	app.HardForkManager.RegisterHandler(v0upgrade.NewHardForkUpgradeHandler(100_000, upgrades.ChainIDSeiHardForkTest, app.WasmKeeper))
+
+	app.RegisterDeliverTxHook(app.AddCosmosEventsToEVMReceiptIfApplicable)
 
 	if app.evmRPCConfig.LiveEVMTracer != "" {
 		chainConfig := evmtypes.DefaultChainConfig().EthereumConfig(app.EvmKeeper.ChainID(app.GetCheckCtx()))
@@ -1089,6 +1053,16 @@ func (app *App) SetStoreUpgradeHandlers() {
 		// configure store loader that checks if version == upgradeHeight and applies store upgrades
 		app.SetStoreLoader(upgradetypes.UpgradeStoreLoader(upgradeInfo.Height, &storeUpgrades))
 	}
+	// TODO: change this upgrade name if the planned upgrade version number ends up changing more
+	if upgradeInfo.Name == "v5.7.0" && !app.UpgradeKeeper.IsSkipHeight(upgradeInfo.Height) {
+		dexStoreKeyName := "dex"
+		storeUpgrades := storetypes.StoreUpgrades{
+			Deleted: []string{dexStoreKeyName},
+		}
+
+		// configure store loader that checks if version == upgradeHeight and applies store upgrades
+		app.SetStoreLoader(upgradetypes.UpgradeStoreLoader(upgradeInfo.Height, &storeUpgrades))
+	}
 }
 
 // AppName returns the name of the App
@@ -1123,7 +1097,6 @@ func (app *App) InitChainer(ctx sdk.Context, req abci.RequestInitChain) abci.Res
 	if err := json.Unmarshal(req.AppStateBytes, &genesisState); err != nil {
 		panic(err)
 	}
-	ctx = ctx.WithContext(app.decorateContextWithDexMemState(ctx.Context()))
 	app.UpgradeKeeper.SetModuleVersionMap(ctx, app.mm.GetVersionMap())
 	return app.mm.InitGenesis(ctx, app.appCodec, genesisState)
 }
@@ -1170,7 +1143,6 @@ func (app *App) ProcessProposalHandler(ctx sdk.Context, req *abci.RequestProcess
 			app.optimisticProcessingInfo.Completion <- struct{}{}
 		} else {
 			go func() {
-				ctx = ctx.WithContext(app.decorateProcessProposalContextWithDexMemState(ctx.Context()))
 				events, txResults, endBlockResp, _ := app.ProcessBlock(ctx, req.Txs, req, req.ProposedLastCommit)
 				optimisticProcessingInfo.Events = events
 				optimisticProcessingInfo.TxRes = txResults
@@ -1210,7 +1182,6 @@ func (app *App) FinalizeBlocker(ctx sdk.Context, req *abci.RequestFinalizeBlock)
 	}
 	metrics.IncrementOptimisticProcessingCounter(false)
 	ctx.Logger().Info("optimistic processing ineligible")
-	ctx = ctx.WithContext(app.decorateContextWithDexMemState(ctx.Context()))
 
 	events, txResults, endBlockResp, _ := app.ProcessBlock(ctx, req.Txs, req, req.DecidedLastCommit)
 
@@ -1420,7 +1391,6 @@ func (app *App) ProcessTxs(
 		dependencyDag.TxMsgAccessOpMapping,
 		absoluteTxIndices,
 	)
-	oldDexMemState := dexutils.GetMemState(ctx.Context()).DeepCopy()
 	if ok {
 		// Write the results back to the concurrent contexts - if concurrent execution fails,
 		// this should not be called and the state is rolled back and retried with synchronous execution
@@ -1430,13 +1400,6 @@ func (app *App) ProcessTxs(
 	// we need to add the wasm dependencies before we process synchronous otherwise it never gets included
 	ctx = app.addBadWasmDependenciesToContext(ctx, concurrentResults)
 	ctx.Logger().Error("Concurrent Execution failed, retrying with Synchronous")
-
-	oldDexMemStateCtx := context.WithValue(ctx.Context(), dexutils.DexMemStateContextKey, oldDexMemState)
-	ctx = ctx.WithContext(oldDexMemStateCtx)
-
-	dexMemState := dexutils.GetMemState(ctx.Context())
-	dexMemState.Clear(ctx)
-	dexMemState.ClearContractToDependencies(ctx)
 
 	txResults := app.ProcessBlockSynchronous(ctx, txs, typedTxs, absoluteTxIndices)
 	processBlockCache.Write()
@@ -1462,12 +1425,6 @@ func (app *App) PartitionPrioritizedTxs(_ sdk.Context, txs [][]byte, typedTxs []
 		for _, msg := range typedTxs[idx].GetMsgs() {
 			switch msg.(type) {
 			case *oracletypes.MsgAggregateExchangeRateVote:
-				prioritized = true
-			case *dexmoduletypes.MsgRegisterContract:
-				prioritized = true
-			case *dexmoduletypes.MsgUnregisterContract:
-				prioritized = true
-			case *dexmoduletypes.MsgUnsuspendContract:
 				prioritized = true
 			default:
 				prioritized = false
@@ -1589,9 +1546,6 @@ func (app *App) BuildDependenciesAndRunTxs(ctx sdk.Context, txs [][]byte, typedT
 
 func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequest, lastCommit abci.CommitInfo) (events []abci.Event, txResults []*abci.ExecTxResult, endBlockResp abci.ResponseEndBlock, err error) {
 	ctx = ctx.WithIsOCCEnabled(app.OccEnabled())
-
-	goCtx := app.decorateContextWithDexMemState(ctx.Context())
-	ctx = ctx.WithContext(goCtx)
 
 	if app.evmTracer != nil {
 		ctx = evmtracers.SetCtxBlockchainTracer(ctx, app.evmTracer)
@@ -1963,7 +1917,6 @@ func initParamsKeeper(appCodec codec.BinaryCodec, legacyAmino *codec.LegacyAmino
 	paramsKeeper.Subspace(oracletypes.ModuleName)
 	paramsKeeper.Subspace(wasm.ModuleName)
 	paramsKeeper.Subspace(evmtypes.ModuleName)
-	paramsKeeper.Subspace(dexmoduletypes.ModuleName)
 	paramsKeeper.Subspace(epochmoduletypes.ModuleName)
 	paramsKeeper.Subspace(tokenfactorytypes.ModuleName)
 	// this line is used by starport scaffolding # stargate/app/paramSubspace
@@ -1983,14 +1936,6 @@ func (app *App) BlacklistedAccAddrs() map[string]bool {
 	}
 
 	return blacklistedAddrs
-}
-
-func (app *App) decorateProcessProposalContextWithDexMemState(base context.Context) context.Context {
-	return context.WithValue(base, dexutils.DexMemStateContextKey, app.ProcessProposalMemState)
-}
-
-func (app *App) decorateContextWithDexMemState(base context.Context) context.Context {
-	return context.WithValue(base, dexutils.DexMemStateContextKey, app.MemState)
 }
 
 func init() {
