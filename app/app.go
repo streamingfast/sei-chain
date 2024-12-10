@@ -1613,7 +1613,11 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 		}
 	}
 
-	endBlockResp := app.EndBlock(ctx, abci.RequestEndBlock{
+	if req.GetHeight() >= 119822071 {
+		panic("Do not go above 119822071 for now")
+	}
+
+	endBlockResp = app.EndBlock(ctx, abci.RequestEndBlock{
 		Height:       req.GetHeight(),
 		BlockGasUsed: evmTotalGasUsed,
 	})
