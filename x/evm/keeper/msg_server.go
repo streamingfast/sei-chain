@@ -19,7 +19,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -294,15 +293,7 @@ func (k *Keeper) applyEVMMessageWithTracing(
 	txCtx := core.NewEVMTxContext(msg)
 	evmHooks := evmtracers.GetCtxEthTracingHooks(ctx)
 	evmInstance := vm.NewEVM(*blockCtx, txCtx, stateDB, cfg, vm.Config{
-		Tracer: &tracing.Hooks{
-			OnTxStart: func(vm *tracing.VMContext, tx *ethtypes.Transaction, from common.Address) {
-				evmHooks.OnTxStart(vm, tx, from)
-
-				evmHooks.OnEnter(0, 0xf1, msg.From, msg.From, msg.Data, msg.GasLimit, msg.Value)
-				evmHooks.OnExit(0, nil, 0, nil, false)
-			},
-			OnTxEnd: evmHooks.OnTxEnd,
-		},
+		Tracer: evmHooks,
 	})
 	stateDB.SetEVM(evmInstance)
 	// stateDB.SetLogger(evmHooks)

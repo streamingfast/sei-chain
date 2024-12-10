@@ -693,7 +693,7 @@ func (f *Firehose) completeTransaction(receipt *types.Receipt) *pbeth.Transactio
 	// Order is important, we must populate the state reverted before we remove the log block index and re-assign ordinals
 	f.populateStateReverted()
 	f.removeLogBlockIndexOnStateRevertedCalls()
-	f.assignOrdinalAndIndexToReceiptLogs()
+	// f.assignOrdinalAndIndexToReceiptLogs()
 
 	if *f.applyBackwardCompatibility {
 		// Known Firehose issue: This field has never been populated in the old Firehose instrumentation
