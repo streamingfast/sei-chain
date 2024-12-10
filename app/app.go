@@ -1617,7 +1617,7 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 		panic("Do not go above 119822071 for now")
 	}
 
-	endBlockResp = app.EndBlock(ctx, abci.RequestEndBlock{
+	endBlockResp := app.EndBlock(ctx, abci.RequestEndBlock{
 		Height:       req.GetHeight(),
 		BlockGasUsed: evmTotalGasUsed,
 	})
