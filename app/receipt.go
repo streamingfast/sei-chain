@@ -14,7 +14,6 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/sei-protocol/sei-chain/utils"
 	evmkeeper "github.com/sei-protocol/sei-chain/x/evm/keeper"
-	evmtracers "github.com/sei-protocol/sei-chain/x/evm/tracers"
 	"github.com/sei-protocol/sei-chain/x/evm/tracing"
 	evmtypes "github.com/sei-protocol/sei-chain/x/evm/types"
 	abci "github.com/tendermint/tendermint/abci/types"
@@ -116,9 +115,9 @@ func (app *App) AddCosmosEventsToEVMReceiptIfApplicable(ctx sdk.Context, tx sdk.
 		r.LogsBloom = bloom[:]
 		_ = app.EvmKeeper.SetTransientReceipt(wasmToEvmEventCtx, txHash, r)
 
-		if tracer := evmtracers.GetCtxBlockchainTracer(ctx); tracer != nil && tracer.OnSeiPostTxCosmosEvents != nil {
-			app.traceSeiPostTxCosmosEvents(ctx, tracer, tx, txHash, addedLogs, r, true)
-		}
+		// if tracer := evmtracers.GetCtxBlockchainTracer(ctx); tracer != nil && tracer.OnSeiPostTxCosmosEvents != nil {
+		// 	app.traceSeiPostTxCosmosEvents(ctx, tracer, tx, txHash, addedLogs, r, true)
+		// }
 	} else {
 		bloom = ethtypes.CreateBloom(ethtypes.Receipts{&ethtypes.Receipt{Logs: logs}})
 		r = &evmtypes.Receipt{
@@ -138,9 +137,9 @@ func (app *App) AddCosmosEventsToEVMReceiptIfApplicable(ctx sdk.Context, tx sdk.
 		}
 		_ = app.EvmKeeper.SetTransientReceipt(wasmToEvmEventCtx, txHash, r)
 
-		if tracer := evmtracers.GetCtxBlockchainTracer(ctx); tracer != nil && tracer.OnSeiPostTxCosmosEvents != nil {
-			app.traceSeiPostTxCosmosEvents(ctx, tracer, tx, txHash, addedLogs, r, false)
-		}
+		// if tracer := evmtracers.GetCtxBlockchainTracer(ctx); tracer != nil && tracer.OnSeiPostTxCosmosEvents != nil {
+		// 	app.traceSeiPostTxCosmosEvents(ctx, tracer, tx, txHash, addedLogs, r, false)
+		// }
 	}
 	if d, found := app.EvmKeeper.GetEVMTxDeferredInfo(ctx); found {
 		app.EvmKeeper.AppendToEvmTxDeferredInfo(wasmToEvmEventCtx, bloom, txHash, d.Surplus)
