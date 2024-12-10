@@ -296,7 +296,7 @@ func (k *Keeper) applyEVMMessageWithTracing(
 		Tracer: evmHooks,
 	})
 	stateDB.SetEVM(evmInstance)
-	stateDB.SetLogger(evmHooks)
+	// stateDB.SetLogger(evmHooks)
 
 	if onStart != nil {
 		onStart(evmInstance)
