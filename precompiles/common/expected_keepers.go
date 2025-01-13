@@ -10,10 +10,13 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
 	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	ibctypes "github.com/cosmos/ibc-go/v3/modules/apps/transfer/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/sei-protocol/sei-chain/utils"
 	oracletypes "github.com/sei-protocol/sei-chain/x/oracle/types"
 )
 
@@ -25,6 +28,12 @@ type BankKeeper interface {
 	GetWeiBalance(ctx sdk.Context, addr sdk.AccAddress) sdk.Int
 	GetDenomMetaData(ctx sdk.Context, denom string) (banktypes.Metadata, bool)
 	GetSupply(ctx sdk.Context, denom string) sdk.Coin
+	LockedCoins(ctx sdk.Context, addr sdk.AccAddress) sdk.Coins
+	SpendableCoins(ctx sdk.Context, addr sdk.AccAddress) sdk.Coins
+}
+
+type BankMsgServer interface {
+	Send(goCtx context.Context, msg *banktypes.MsgSend) (*banktypes.MsgSendResponse, error)
 }
 
 type EVMKeeper interface {
@@ -32,6 +41,7 @@ type EVMKeeper interface {
 	GetSeiAddressOrDefault(ctx sdk.Context, evmAddress common.Address) sdk.AccAddress // only used for getting precompile Sei addresses
 	GetEVMAddress(sdk.Context, sdk.AccAddress) (common.Address, bool)
 	GetEVMAddressOrDefault(sdk.Context, sdk.AccAddress) common.Address
+	SetAddressMapping(sdk.Context, sdk.AccAddress, common.Address)
 	GetCodeHash(sdk.Context, common.Address) common.Hash
 	GetPriorityNormalizer(ctx sdk.Context) sdk.Dec
 	GetBaseDenom(ctx sdk.Context) string
@@ -41,11 +51,25 @@ type EVMKeeper interface {
 	GetERC20CW20Pointer(ctx sdk.Context, cw20Address string) (addr common.Address, version uint16, exists bool)
 	SetERC721CW721Pointer(ctx sdk.Context, cw721Address string, addr common.Address) error
 	GetERC721CW721Pointer(ctx sdk.Context, cw721Address string) (addr common.Address, version uint16, exists bool)
+	SetCode(ctx sdk.Context, addr common.Address, code []byte)
+	UpsertERCNativePointer(
+		ctx sdk.Context, evm *vm.EVM, token string, metadata utils.ERCMetadata,
+	) (contractAddr common.Address, err error)
+	UpsertERCCW20Pointer(
+		ctx sdk.Context, evm *vm.EVM, cw20Addr string, metadata utils.ERCMetadata,
+	) (contractAddr common.Address, err error)
+	UpsertERCCW721Pointer(
+		ctx sdk.Context, evm *vm.EVM, cw721Addr string, metadata utils.ERCMetadata,
+	) (contractAddr common.Address, err error)
+	GetEVMGasLimitFromCtx(ctx sdk.Context) uint64
+	GetCosmosGasLimitFromEVMGas(ctx sdk.Context, evmGas uint64) uint64
 }
 
 type AccountKeeper interface {
+	GetAccount(ctx sdk.Context, addr sdk.AccAddress) authtypes.AccountI
 	HasAccount(ctx sdk.Context, addr sdk.AccAddress) bool
 	SetAccount(ctx sdk.Context, acc authtypes.AccountI)
+	RemoveAccount(ctx sdk.Context, acc authtypes.AccountI)
 	NewAccountWithAddress(ctx sdk.Context, addr sdk.AccAddress) authtypes.AccountI
 }
 
@@ -60,13 +84,17 @@ type WasmdKeeper interface {
 }
 
 type WasmdViewKeeper interface {
-	QuerySmart(ctx sdk.Context, contractAddr sdk.AccAddress, req []byte) ([]byte, error)
+	QuerySmartSafe(ctx sdk.Context, contractAddr sdk.AccAddress, req []byte) ([]byte, error)
 }
 
 type StakingKeeper interface {
 	Delegate(goCtx context.Context, msg *stakingtypes.MsgDelegate) (*stakingtypes.MsgDelegateResponse, error)
 	BeginRedelegate(goCtx context.Context, msg *stakingtypes.MsgBeginRedelegate) (*stakingtypes.MsgBeginRedelegateResponse, error)
 	Undelegate(goCtx context.Context, msg *stakingtypes.MsgUndelegate) (*stakingtypes.MsgUndelegateResponse, error)
+}
+
+type StakingQuerier interface {
+	Delegation(c context.Context, req *stakingtypes.QueryDelegationRequest) (*stakingtypes.QueryDelegationResponse, error)
 }
 
 type GovKeeper interface {
@@ -77,6 +105,7 @@ type GovKeeper interface {
 type DistributionKeeper interface {
 	SetWithdrawAddr(ctx sdk.Context, delegatorAddr sdk.AccAddress, withdrawAddr sdk.AccAddress) error
 	WithdrawDelegationRewards(ctx sdk.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress) (sdk.Coins, error)
+	DelegationTotalRewards(c context.Context, req *distrtypes.QueryDelegationTotalRewardsRequest) (*distrtypes.QueryDelegationTotalRewardsResponse, error)
 }
 
 type TransferKeeper interface {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math/big"
 	"strings"
 	"time"
@@ -24,6 +25,8 @@ import (
 	tmtypes "github.com/tendermint/tendermint/types"
 )
 
+var ErrPanicTx = errors.New("transaction is panic tx")
+
 const UnconfirmedTxQueryMaxPage = 20
 const UnconfirmedTxQueryPerPage = 30
 
@@ -36,14 +39,55 @@ type TransactionAPI struct {
 	connectionType ConnectionType
 }
 
+type SeiTransactionAPI struct {
+	*TransactionAPI
+	isPanicTx func(ctx context.Context, hash common.Hash) (bool, error)
+}
+
 func NewTransactionAPI(tmClient rpcclient.Client, k *keeper.Keeper, ctxProvider func(int64) sdk.Context, txConfig client.TxConfig, homeDir string, connectionType ConnectionType) *TransactionAPI {
 	return &TransactionAPI{tmClient: tmClient, keeper: k, ctxProvider: ctxProvider, txConfig: txConfig, homeDir: homeDir, connectionType: connectionType}
 }
 
+func NewSeiTransactionAPI(
+	tmClient rpcclient.Client,
+	k *keeper.Keeper,
+	ctxProvider func(int64) sdk.Context, txConfig client.TxConfig,
+	homeDir string,
+	connectionType ConnectionType,
+	isPanicTx func(ctx context.Context, hash common.Hash) (bool, error),
+) *SeiTransactionAPI {
+	return &SeiTransactionAPI{TransactionAPI: NewTransactionAPI(tmClient, k, ctxProvider, txConfig, homeDir, connectionType), isPanicTx: isPanicTx}
+}
+
+func (t *SeiTransactionAPI) GetTransactionReceiptExcludeTraceFail(ctx context.Context, hash common.Hash) (result map[string]interface{}, returnErr error) {
+	return getTransactionReceipt(ctx, t.TransactionAPI, hash, true, t.isPanicTx)
+}
+
 func (t *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash common.Hash) (result map[string]interface{}, returnErr error) {
+	return getTransactionReceipt(ctx, t, hash, false, nil)
+}
+
+func getTransactionReceipt(
+	ctx context.Context,
+	t *TransactionAPI,
+	hash common.Hash,
+	excludePanicTxs bool,
+	isPanicTx func(ctx context.Context, hash common.Hash) (bool, error),
+) (result map[string]interface{}, returnErr error) {
 	startTime := time.Now()
 	defer recordMetrics("eth_getTransactionReceipt", t.connectionType, startTime, returnErr == nil)
 	sdkctx := t.ctxProvider(LatestCtxHeight)
+
+	if excludePanicTxs {
+		isPanicTx, err := isPanicTx(ctx, hash)
+		if isPanicTx {
+			return nil, ErrPanicTx
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to check if tx is panic tx: %w", err)
+		}
+	}
+
 	receipt, err := t.keeper.GetReceipt(sdkctx, hash)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -52,6 +96,45 @@ func (t *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash common.
 			return nil, nil
 		}
 		return nil, err
+	}
+	// Fill in the receipt if the transaction has failed and used 0 gas
+	// This case is for when a tx fails before it makes it to the VM
+	if receipt.Status == 0 && receipt.GasUsed == 0 {
+		// Get the block
+		height := int64(receipt.BlockNumber)
+		block, err := blockByNumberWithRetry(ctx, t.tmClient, &height, 1)
+		if err != nil {
+			return nil, err
+		}
+
+		// Find the transaction in the block
+		for _, tx := range block.Block.Txs {
+			etx := getEthTxForTxBz(tx, t.txConfig.TxDecoder())
+			if etx != nil && etx.Hash() == hash {
+				// Get the signer
+				signer := ethtypes.MakeSigner(
+					types.DefaultChainConfig().EthereumConfig(t.keeper.ChainID(sdkctx)),
+					big.NewInt(height),
+					uint64(block.Block.Time.Unix()),
+				)
+				from, _ := ethtypes.Sender(signer, etx)
+
+				// Update receipt with correct information
+				receipt.From = from.Hex()
+				if etx.To() != nil {
+					receipt.To = etx.To().Hex()
+					receipt.ContractAddress = ""
+				} else {
+					receipt.To = ""
+					// For contract creation transactions, calculate the contract address
+					receipt.ContractAddress = crypto.CreateAddress(from, etx.Nonce()).Hex()
+				}
+				receipt.TxType = uint32(etx.Type())
+				receipt.Status = uint32(ethtypes.ReceiptStatusFailed)
+				receipt.GasUsed = 0
+				break
+			}
+		}
 	}
 	height := int64(receipt.BlockNumber)
 	block, err := blockByNumberWithRetry(ctx, t.tmClient, &height, 1)
@@ -278,7 +361,6 @@ func encodeReceipt(receipt *types.Receipt, decoder sdk.TxDecoder, block *coretyp
 	}
 	bloom := ethtypes.Bloom{}
 	bloom.SetBytes(receipt.LogsBloom)
-
 	fields := map[string]interface{}{
 		"blockHash":         bh,
 		"blockNumber":       hexutil.Uint64(receipt.BlockNumber),

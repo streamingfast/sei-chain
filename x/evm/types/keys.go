@@ -38,7 +38,7 @@ var (
 	ReceiptKeyPrefix                           = []byte{0x0b}
 	WhitelistedCodeHashesForBankSendPrefix     = []byte{0x0c}
 	BlockBloomPrefix                           = []byte{0x0d}
-	TxHashesPrefix                             = []byte{0x0e}
+	TxHashesPrefix                             = []byte{0x0e} // deprecated
 	WhitelistedCodeHashesForDelegateCallPrefix = []byte{0x0f}
 
 	// TxHashPrefix  = []byte{0x10}
@@ -54,6 +54,9 @@ var (
 
 	AnteSurplusPrefix  = []byte{0x18} // transient
 	DeferredInfoPrefix = []byte{0x19} // transient
+
+	LegacyBlockBloomCutoffHeightKey = []byte{0x1a}
+	BaseFeePerGasPrefix             = []byte{0x1b}
 )
 
 var (

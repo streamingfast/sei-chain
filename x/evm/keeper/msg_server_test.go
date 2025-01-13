@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"math/big"
 	"os"
 	"testing"
@@ -16,6 +17,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/stretchr/testify/require"
+	abci "github.com/tendermint/tendermint/abci/types"
+
 	"github.com/sei-protocol/sei-chain/example/contracts/echo"
 	"github.com/sei-protocol/sei-chain/example/contracts/sendall"
 	"github.com/sei-protocol/sei-chain/example/contracts/simplestorage"
@@ -27,8 +31,6 @@ import (
 	"github.com/sei-protocol/sei-chain/x/evm/state"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
 	"github.com/sei-protocol/sei-chain/x/evm/types/ethtx"
-	"github.com/stretchr/testify/require"
-	abci "github.com/tendermint/tendermint/abci/types"
 )
 
 type mockTx struct {
@@ -125,6 +127,7 @@ func TestEVMTransaction(t *testing.T) {
 	require.Nil(t, err)
 	res, err = msgServer.EVMTransaction(sdk.WrapSDKContext(ctx), req)
 	require.Nil(t, err)
+	require.NotEmpty(t, res.Logs)
 	require.LessOrEqual(t, res.GasUsed, uint64(200000))
 	require.Empty(t, res.VmError)
 	require.NoError(t, k.FlushTransientReceipts(ctx))
@@ -336,14 +339,17 @@ func TestEVMPrecompiles(t *testing.T) {
 		return ctx, nil
 	})
 	require.Nil(t, err)
+	coinbaseBalanceBefore := k.BankKeeper().GetBalance(ctx, state.GetCoinbaseAddress(ctx.TxIndex()), "usei").Amount.Uint64()
 	res, err := msgServer.EVMTransaction(sdk.WrapSDKContext(ctx), req)
 	require.Nil(t, err)
 	require.LessOrEqual(t, res.GasUsed, uint64(500000))
 	require.Empty(t, res.VmError)
 	require.NotEmpty(t, res.ReturnData)
 	require.NotEmpty(t, res.Hash)
-	require.Equal(t, uint64(1000000)-res.GasUsed, k.BankKeeper().GetBalance(ctx, sdk.AccAddress(evmAddr[:]), "usei").Amount.Uint64())
-	require.Equal(t, res.GasUsed, k.BankKeeper().GetBalance(ctx, state.GetCoinbaseAddress(ctx.TxIndex()), k.GetBaseDenom(ctx)).Amount.Uint64())
+	require.Equal(t, uint64(1000000)-res.GasUsed, k.BankKeeper().GetBalance(ctx, sdk.AccAddress(evmAddr[:]), k.GetBaseDenom(ctx)).Amount.Uint64())
+	coinbaseBalanceAfter := k.BankKeeper().GetBalance(ctx, state.GetCoinbaseAddress(ctx.TxIndex()), k.GetBaseDenom(ctx)).Amount.Uint64()
+	diff := coinbaseBalanceAfter - coinbaseBalanceBefore
+	require.Equal(t, res.GasUsed, diff)
 	require.NoError(t, k.FlushTransientReceipts(ctx))
 	receipt, err := k.GetReceipt(ctx, common.HexToHash(res.Hash))
 	require.Nil(t, err)
@@ -460,7 +466,11 @@ func TestEVMBlockEnv(t *testing.T) {
 	require.NotEmpty(t, res.ReturnData)
 	require.NotEmpty(t, res.Hash)
 	require.Equal(t, uint64(1000000)-res.GasUsed, k.BankKeeper().GetBalance(ctx, sdk.AccAddress(evmAddr[:]), "usei").Amount.Uint64())
-	require.Equal(t, res.GasUsed, k.BankKeeper().GetBalance(ctx, state.GetCoinbaseAddress(ctx.TxIndex()), k.GetBaseDenom(ctx)).Amount.Uint64())
+	fmt.Println("all balances sender = ", k.BankKeeper().GetAllBalances(ctx, sdk.AccAddress(evmAddr[:])))
+	fmt.Println("all balances coinbase = ", k.BankKeeper().GetAllBalances(ctx, state.GetCoinbaseAddress(ctx.TxIndex())))
+	fmt.Println("wei = ", k.BankKeeper().GetBalance(ctx, state.GetCoinbaseAddress(ctx.TxIndex()), "wei").Amount.Uint64())
+	require.Equal(t, res.GasUsed, k.BankKeeper().GetBalance(ctx, state.GetCoinbaseAddress(ctx.TxIndex()), "usei").Amount.Uint64())
+
 	require.NoError(t, k.FlushTransientReceipts(ctx))
 	receipt, err := k.GetReceipt(ctx, common.HexToHash(res.Hash))
 	require.Nil(t, err)
@@ -600,6 +610,21 @@ func TestRegisterPointer(t *testing.T) {
 		hasRegisteredEvent = true
 	}
 	require.False(t, hasRegisteredEvent)
+
+	// upgrade
+	k.DeleteCW721ERC721Pointer(ctx, pointee, version)
+	k.SetCW721ERC721PointerWithVersion(ctx, pointee, pointer.String(), version-1)
+	res, err = keeper.NewMsgServerImpl(k).RegisterPointer(sdk.WrapSDKContext(ctx), &types.MsgRegisterPointer{
+		Sender:      sender.String(),
+		PointerType: types.PointerType_ERC721,
+		ErcAddress:  pointee.Hex(),
+	})
+	require.Nil(t, err)
+	newPointer, version, exists := k.GetCW721ERC721Pointer(ctx, pointee)
+	require.True(t, exists)
+	require.Equal(t, erc721.CurrentVersion, version)
+	require.Equal(t, newPointer.String(), res.PointerAddress)
+	require.Equal(t, newPointer.String(), pointer.String()) // should retain the existing contract address
 }
 
 func TestEvmError(t *testing.T) {

@@ -22,6 +22,8 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/sei-protocol/sei-chain/precompiles/wasmd"
+	"github.com/sei-protocol/sei-chain/utils"
 	"github.com/sei-protocol/sei-chain/x/evm/artifacts/erc20"
 	"github.com/sei-protocol/sei-chain/x/evm/artifacts/erc721"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
@@ -47,6 +49,11 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 		return &types.MsgEVMTransactionResponse{}, nil
 	}
 	ctx := sdk.UnwrapSDKContext(goCtx)
+	tx, _ := msg.AsTransaction()
+	isWasmdPrecompileCall := wasmd.IsWasmdCall(tx.To())
+	if isWasmdPrecompileCall {
+		ctx = ctx.WithEVMEntryViaWasmdPrecompile(true)
+	}
 	// EVM has a special case here, mainly because for an EVM transaction the gas limit is set on EVM payload level, not on top-level GasWanted field
 	// as normal transactions (because existing eth client can't). As a result EVM has its own dedicated ante handler chain. The full sequence is:
 
@@ -58,11 +65,11 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 	ctx = ctx.WithGasMeter(sdk.NewInfiniteGasMeterWithMultiplier(ctx))
 
 	stateDB := state.NewDBImpl(ctx, &server, false)
-	tx, _ := msg.AsTransaction()
 	emsg := server.GetEVMMessage(ctx, tx, msg.Derived.SenderEVMAddr)
 	gp := server.GetGasPool()
 
 	defer func() {
+		defer stateDB.Cleanup()
 		if pe := recover(); pe != nil {
 			if !strings.Contains(fmt.Sprintf("%s", pe), occtypes.ErrReadEstimate.Error()) {
 				debug.PrintStack()
@@ -82,6 +89,41 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 				},
 			)
 			return
+		}
+		extraSurplus := sdk.ZeroInt()
+		surplus, ferr := stateDB.Finalize()
+		if ferr != nil {
+			err = ferr
+			ctx.Logger().Error(fmt.Sprintf("failed to finalize EVM stateDB: %s", err))
+
+			telemetry.IncrCounterWithLabels(
+				[]string{types.ModuleName, "errors", "stateDB_finalize"},
+				1,
+				[]metrics.Label{
+					telemetry.NewLabel("type", err.Error()),
+				},
+			)
+			return
+		}
+		if isWasmdPrecompileCall {
+			syntheticReceipt, err := server.GetTransientReceipt(ctx, ctx.TxSum())
+			if err == nil {
+				for _, l := range syntheticReceipt.Logs {
+					stateDB.AddUntracedLog(&ethtypes.Log{
+						Address: common.HexToAddress(l.Address),
+						Topics:  utils.Map(l.Topics, common.HexToHash),
+						Data:    l.Data,
+					})
+				}
+				if syntheticReceipt.VmError != "" {
+					serverRes.VmError = fmt.Sprintf("%s\n%s\n", serverRes.VmError, syntheticReceipt.VmError)
+				}
+				server.DeleteTransientReceipt(ctx, ctx.TxSum())
+			}
+			syntheticDeferredInfo, found := server.GetEVMTxDeferredInfo(ctx)
+			if found {
+				extraSurplus = extraSurplus.Add(syntheticDeferredInfo.Surplus)
+			}
 		}
 		receipt, rerr := server.WriteReceipt(ctx, stateDB, emsg, uint32(tx.Type()), tx.Hash(), serverRes.GasUsed, serverRes.VmError)
 		if rerr != nil {
@@ -105,20 +147,7 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 			telemetry.IncrCounter(1, "receipt", "status", "success")
 		}
 
-		surplus, ferr := stateDB.Finalize()
-		if ferr != nil {
-			err = ferr
-			ctx.Logger().Error(fmt.Sprintf("failed to finalize EVM stateDB: %s", err))
-
-			telemetry.IncrCounterWithLabels(
-				[]string{types.ModuleName, "errors", "stateDB_finalize"},
-				1,
-				[]metrics.Label{
-					telemetry.NewLabel("type", err.Error()),
-				},
-			)
-			return
-		}
+		surplus = surplus.Add(extraSurplus)
 		bloom := ethtypes.Bloom{}
 		bloom.SetBytes(receipt.LogsBloom)
 		server.AppendToEvmTxDeferredInfo(ctx, bloom, tx.Hash(), surplus)
@@ -149,22 +178,25 @@ func (server msgServer) EVMTransaction(goCtx context.Context, msg *types.MsgEVMT
 			},
 		)
 
-	} else {
-		// if applyErr is nil then res must be non-nil
-		if res.Err != nil {
-			serverRes.VmError = res.Err.Error()
-
-			telemetry.IncrCounterWithLabels(
-				[]string{types.ModuleName, "errors", "vm_execution"},
-				1,
-				[]metrics.Label{
-					telemetry.NewLabel("type", serverRes.VmError),
-				},
-			)
-		}
-		serverRes.GasUsed = res.UsedGas
-		serverRes.ReturnData = res.ReturnData
+		return
 	}
+
+	// if applyErr is nil then res must be non-nil
+	if res.Err != nil {
+		serverRes.VmError = res.Err.Error()
+
+		telemetry.IncrCounterWithLabels(
+			[]string{types.ModuleName, "errors", "vm_execution"},
+			1,
+			[]metrics.Label{
+				telemetry.NewLabel("type", serverRes.VmError),
+			},
+		)
+	}
+
+	serverRes.GasUsed = res.UsedGas
+	serverRes.ReturnData = res.ReturnData
+	serverRes.Logs = types.NewLogsFromEth(stateDB.GetAllLogs())
 
 	return
 }
@@ -210,11 +242,15 @@ func (k *Keeper) applyEVMTx(ctx sdk.Context, tx *ethtypes.Transaction, msg *core
 	if evmHooks != nil && evmHooks.OnTxEnd != nil {
 		onEnd = func(res *core.ExecutionResult, err error) {
 			var receipt *ethtypes.Receipt
-			if err == nil {
+			if res != nil {
 				receipt = getEthReceipt(ctx, tx, msg, res, stateDB)
+			} else if err != nil {
+				receipt = getEthFailedReceipt(ctx, tx, msg)
+			} else {
+				panic("onEnd called with nil result and nil error")
 			}
 
-			var txErr error
+			var txErr = err
 			if res != nil {
 				txErr = res.Err
 			}
@@ -271,7 +307,22 @@ func (k *Keeper) applyEVMMessageWithTracing(
 	}
 	if onEnd != nil {
 		defer func() {
-			onEnd(res, err)
+			r := recover()
+
+			if r != nil {
+				var recoveredErr error
+				if err, ok := r.(error); ok {
+					recoveredErr = err
+				} else {
+					// Not of type error, create a new dummy one
+					recoveredErr = fmt.Errorf("%v", r)
+				}
+
+				onEnd(nil, recoveredErr)
+				panic(r)
+			} else {
+				onEnd(res, err)
+			}
 		}()
 	}
 
@@ -322,12 +373,20 @@ func (server msgServer) RegisterPointer(goCtx context.Context, msg *types.MsgReg
 		panic("unknown pointer type")
 	}
 	codeID := server.GetStoredPointerCodeID(ctx, msg.PointerType)
-	bz, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
 	moduleAcct := server.accountKeeper.GetModuleAddress(types.ModuleName)
-	pointerAddr, _, err := server.wasmKeeper.Instantiate(ctx, codeID, moduleAcct, moduleAcct, bz, fmt.Sprintf("Pointer of %s", msg.ErcAddress), sdk.NewCoins())
+	var err error
+	var pointerAddr sdk.AccAddress
+	if exists {
+		bz, _ := json.Marshal(map[string]interface{}{})
+		pointerAddr = existingPointer
+		_, err = server.wasmKeeper.Migrate(ctx, existingPointer, moduleAcct, codeID, bz)
+	} else {
+		bz, jerr := json.Marshal(payload)
+		if jerr != nil {
+			return nil, jerr
+		}
+		pointerAddr, _, err = server.wasmKeeper.Instantiate(ctx, codeID, moduleAcct, moduleAcct, bz, fmt.Sprintf("Pointer of %s", msg.ErcAddress), sdk.NewCoins())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -370,17 +429,39 @@ func (server msgServer) AssociateContractAddress(goCtx context.Context, msg *typ
 }
 
 func getEthReceipt(ctx sdk.Context, tx *ethtypes.Transaction, msg *core.Message, res *core.ExecutionResult, stateDB *state.DBImpl) *ethtypes.Receipt {
-	ethLogs := stateDB.GetAllLogs()
+	receipt := getEthCommonReceipt(ctx, tx, msg)
+	receipt.GasUsed = res.UsedGas
+	receipt.Logs = stateDB.GetAllLogs()
+	receipt.Bloom = ethtypes.CreateBloom(ethtypes.Receipts{receipt})
+
+	if res.Err == nil {
+		receipt.Status = ethtypes.ReceiptStatusSuccessful
+	} else {
+		receipt.Status = ethtypes.ReceiptStatusFailed
+	}
+
+	return receipt
+}
+
+// getEthFailedReceipt returns a receipt for a transaction that had no execution result and ended with an error. This
+// usually happens when the transaction panicked due to out of gas error and later recovered.
+func getEthFailedReceipt(ctx sdk.Context, tx *ethtypes.Transaction, msg *core.Message) *ethtypes.Receipt {
+	receipt := getEthCommonReceipt(ctx, tx, msg)
+	receipt.Status = ethtypes.ReceiptStatusFailed
+
+	return receipt
+}
+
+// getEthFailedReceipt returns a receipt for a transaction that had no execution result and ended with an error. This
+// usually happens when the transaction panicked due to out of gas error and later recovered.
+func getEthCommonReceipt(ctx sdk.Context, tx *ethtypes.Transaction, msg *core.Message) *ethtypes.Receipt {
 	receipt := &ethtypes.Receipt{
 		Type:              tx.Type(),
 		CumulativeGasUsed: uint64(0),
-		Logs:              ethLogs,
 		TxHash:            tx.Hash(),
-		GasUsed:           res.UsedGas,
 		EffectiveGasPrice: tx.GasPrice(),
 		TransactionIndex:  uint(ctx.TxIndex()),
 	}
-	receipt.Bloom = ethtypes.CreateBloom(ethtypes.Receipts{receipt})
 
 	if msg.To == nil {
 		receipt.ContractAddress = crypto.CreateAddress(msg.From, msg.Nonce)
@@ -388,12 +469,6 @@ func getEthReceipt(ctx sdk.Context, tx *ethtypes.Transaction, msg *core.Message,
 		if len(msg.Data) > 0 {
 			receipt.ContractAddress = *msg.To
 		}
-	}
-
-	if res.Err == nil {
-		receipt.Status = ethtypes.ReceiptStatusSuccessful
-	} else {
-		receipt.Status = ethtypes.ReceiptStatusFailed
 	}
 
 	return receipt

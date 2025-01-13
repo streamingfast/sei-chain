@@ -1,10 +1,12 @@
 package evmrpc
 
 import (
+	"context"
 	"strings"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rpc"
 	evmCfg "github.com/sei-protocol/sei-chain/x/evm/config"
 	"github.com/sei-protocol/sei-chain/x/evm/keeper"
@@ -31,6 +33,7 @@ func NewEVMHTTPServer(
 	ctxProvider func(int64) sdk.Context,
 	txConfig client.TxConfig,
 	homeDir string,
+	isPanicTxFunc func(ctx context.Context, hash common.Hash) (bool, error), // optional - for testing
 ) (EVMServer, error) {
 	httpServer := NewHTTPServer(logger, rpc.HTTPTimeouts{
 		ReadTimeout:       config.ReadTimeout,
@@ -45,6 +48,16 @@ func NewEVMHTTPServer(
 	sendAPI := NewSendAPI(tmClient, txConfig, &SendConfig{slow: config.Slow}, k, ctxProvider, homeDir, simulateConfig, ConnectionTypeHTTP)
 	ctx := ctxProvider(LatestCtxHeight)
 
+	txAPI := NewTransactionAPI(tmClient, k, ctxProvider, txConfig, homeDir, ConnectionTypeHTTP)
+	debugAPI := NewDebugAPI(tmClient, k, ctxProvider, txConfig.TxDecoder(), simulateConfig, ConnectionTypeHTTP)
+	if isPanicTxFunc == nil {
+		isPanicTxFunc = func(ctx context.Context, hash common.Hash) (bool, error) {
+			return debugAPI.isPanicTx(ctx, hash)
+		}
+	}
+	seiTxAPI := NewSeiTransactionAPI(tmClient, k, ctxProvider, txConfig, homeDir, ConnectionTypeHTTP, isPanicTxFunc)
+	seiDebugAPI := NewSeiDebugAPI(tmClient, k, ctxProvider, txConfig.TxDecoder(), simulateConfig, ConnectionTypeHTTP)
+
 	apis := []rpc.API{
 		{
 			Namespace: "echo",
@@ -55,8 +68,16 @@ func NewEVMHTTPServer(
 			Service:   NewBlockAPI(tmClient, k, ctxProvider, txConfig, ConnectionTypeHTTP),
 		},
 		{
+			Namespace: "sei",
+			Service:   NewSeiBlockAPI(tmClient, k, ctxProvider, txConfig, ConnectionTypeHTTP, isPanicTxFunc),
+		},
+		{
 			Namespace: "eth",
-			Service:   NewTransactionAPI(tmClient, k, ctxProvider, txConfig, homeDir, ConnectionTypeHTTP),
+			Service:   txAPI,
+		},
+		{
+			Namespace: "sei",
+			Service:   seiTxAPI,
 		},
 		{
 			Namespace: "eth",
@@ -80,7 +101,11 @@ func NewEVMHTTPServer(
 		},
 		{
 			Namespace: "eth",
-			Service:   NewFilterAPI(tmClient, &LogFetcher{tmClient: tmClient, k: k, ctxProvider: ctxProvider}, &FilterConfig{timeout: config.FilterTimeout, maxLog: config.MaxLogNoBlock, maxBlock: config.MaxBlocksForLog}, ConnectionTypeHTTP),
+			Service:   NewFilterAPI(tmClient, k, ctxProvider, txConfig, &FilterConfig{timeout: config.FilterTimeout, maxLog: config.MaxLogNoBlock, maxBlock: config.MaxBlocksForLog}, ConnectionTypeHTTP, "eth"),
+		},
+		{
+			Namespace: "sei",
+			Service:   NewFilterAPI(tmClient, k, ctxProvider, txConfig, &FilterConfig{timeout: config.FilterTimeout, maxLog: config.MaxLogNoBlock, maxBlock: config.MaxBlocksForLog}, ConnectionTypeHTTP, "sei"),
 		},
 		{
 			Namespace: "sei",
@@ -96,7 +121,11 @@ func NewEVMHTTPServer(
 		},
 		{
 			Namespace: "debug",
-			Service:   NewDebugAPI(tmClient, k, ctxProvider, txConfig.TxDecoder(), simulateConfig, ConnectionTypeHTTP),
+			Service:   debugAPI,
+		},
+		{
+			Namespace: "sei",
+			Service:   seiDebugAPI,
 		},
 	}
 	// Test API can only exist on non-live chain IDs.  These APIs instrument certain overrides.
@@ -173,7 +202,7 @@ func NewEVMWebSocketServer(
 		},
 		{
 			Namespace: "eth",
-			Service:   NewSubscriptionAPI(tmClient, &LogFetcher{tmClient: tmClient, k: k, ctxProvider: ctxProvider}, &SubscriptionConfig{subscriptionCapacity: 100, newHeadLimit: config.MaxSubscriptionsNewHead}, &FilterConfig{timeout: config.FilterTimeout, maxLog: config.MaxLogNoBlock, maxBlock: config.MaxBlocksForLog}, ConnectionTypeWS),
+			Service:   NewSubscriptionAPI(tmClient, &LogFetcher{tmClient: tmClient, k: k, ctxProvider: ctxProvider, txConfig: txConfig}, &SubscriptionConfig{subscriptionCapacity: 100, newHeadLimit: config.MaxSubscriptionsNewHead}, &FilterConfig{timeout: config.FilterTimeout, maxLog: config.MaxLogNoBlock, maxBlock: config.MaxBlocksForLog}, ConnectionTypeWS),
 		},
 		{
 			Namespace: "web3",

@@ -14,7 +14,8 @@ describe("Associate Balances", function () {
         },
         "test3": {
             seiAddress: 'sei1qkawqt7dw09rkvn53lm2deamtfcpuq9v0h6zur',
-            evmAddress: '0xCb2FB25A6a34Ca874171Ac0406d05A49BC45a1cF'
+            evmAddress: '0xCb2FB25A6a34Ca874171Ac0406d05A49BC45a1cF',
+            castAddress: 'sei1evhmykn2xn9gwst34szqd5z6fx7ytgw0l7g0vs',
         }
     }
 
@@ -34,10 +35,10 @@ describe("Associate Balances", function () {
         const afterSei = BigInt(await getSeiBalance(seiAddr))
         const afterEvm = await ethers.provider.getBalance(evmAddr)
 
-        // console.log(`SEI Balance (before): ${beforeSei}`)
-        // console.log(`EVM Balance (before): ${beforeEvm}`)
-        // console.log(`SEI Balance (after): ${afterSei}`)
-        // console.log(`EVM Balance (after): ${afterEvm}`)
+        console.log(`SEI Balance (before): ${beforeSei}`)
+        console.log(`EVM Balance (before): ${beforeEvm}`)
+        console.log(`SEI Balance (after): ${afterSei}`)
+        console.log(`EVM Balance (after): ${afterEvm}`)
 
         const multiplier = BigInt(1000000000000)
         expect(afterEvm).to.equal((beforeSei * multiplier) + beforeEvm - (gas * multiplier))
@@ -81,7 +82,12 @@ describe("Associate Balances", function () {
         await verifyAssociation(addr.seiAddress, addr.evmAddress, async function(){
             await associateKey("test3")
             return BigInt(0)
-        })
+        });
+
+        // it should not be able to send funds to the cast address after association
+        expect(await getSeiBalance(addr.castAddress)).to.equal(0);
+        await fundSeiAddress(addr.castAddress, "100");
+        expect(await getSeiBalance(addr.castAddress)).to.equal(0);
     });
 
 })

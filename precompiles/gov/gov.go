@@ -29,19 +29,6 @@ const (
 //go:embed abi.json
 var f embed.FS
 
-func GetABI() abi.ABI {
-	abiBz, err := f.ReadFile("abi.json")
-	if err != nil {
-		panic(err)
-	}
-
-	newAbi, err := abi.JSON(bytes.NewReader(abiBz))
-	if err != nil {
-		panic(err)
-	}
-	return newAbi
-}
-
 type PrecompileExecutor struct {
 	govKeeper  pcommon.GovKeeper
 	evmKeeper  pcommon.EVMKeeper
@@ -53,7 +40,7 @@ type PrecompileExecutor struct {
 }
 
 func NewPrecompile(govKeeper pcommon.GovKeeper, evmKeeper pcommon.EVMKeeper, bankKeeper pcommon.BankKeeper) (*pcommon.Precompile, error) {
-	newAbi := GetABI()
+	newAbi := pcommon.MustGetABI(f, "abi.json")
 
 	p := &PrecompileExecutor{
 		govKeeper:  govKeeper,
@@ -90,7 +77,7 @@ func (p PrecompileExecutor) Execute(ctx sdk.Context, method *abi.Method, caller 
 	if readOnly {
 		return nil, errors.New("cannot call gov precompile from staticcall")
 	}
-	if caller.Cmp(callingContract) != 0 {
+	if ctx.EVMPrecompileCalledFromDelegateCall() {
 		return nil, errors.New("cannot delegatecall gov")
 	}
 

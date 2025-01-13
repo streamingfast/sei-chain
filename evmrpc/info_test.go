@@ -1,6 +1,7 @@
 package evmrpc_test
 
 import (
+	"context"
 	"errors"
 	"math/big"
 	"testing"
@@ -58,11 +59,11 @@ func TestCoinbase(t *testing.T) {
 }
 
 func TestGasPrice(t *testing.T) {
-	Ctx = Ctx.WithBlockHeight(1)
 	resObj := sendRequestGood(t, "gasPrice")
 	Ctx = Ctx.WithBlockHeight(8)
 	result := resObj["result"].(string)
-	require.Equal(t, "0xa", result)
+	onePointOneGwei := "0x4190ab00"
+	require.Equal(t, onePointOneGwei, result)
 }
 
 func TestFeeHistory(t *testing.T) {
@@ -81,12 +82,12 @@ func TestFeeHistory(t *testing.T) {
 	Ctx = Ctx.WithBlockHeight(1) // Simulate context with a specific block height
 
 	testCases := []feeHistoryTestCase{
-		{name: "Valid request by number", blockCount: 1, lastBlock: "0x8", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0xa", expectedBaseFee: "0x0", expectedGasUsed: 0.5},
-		{name: "Valid request by latest", blockCount: 1, lastBlock: "latest", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0xa", expectedBaseFee: "0x0", expectedGasUsed: 0.5},
-		{name: "Valid request by earliest", blockCount: 1, lastBlock: "earliest", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0xa", expectedBaseFee: "0x0", expectedGasUsed: 0.5},
-		{name: "Request on the same block", blockCount: 1, lastBlock: "0x1", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0xa", expectedBaseFee: "0x0", expectedGasUsed: 0.5},
-		{name: "Request on future block", blockCount: 1, lastBlock: "0x9", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0xa", expectedBaseFee: "0x0", expectedGasUsed: 0.5},
-		{name: "Block count truncates", blockCount: 1025, lastBlock: "latest", rewardPercentiles: []interface{}{25}, expectedOldest: "0x1", expectedReward: "0xa", expectedBaseFee: "0x0", expectedGasUsed: 0.5},
+		{name: "Valid request by number", blockCount: 1, lastBlock: "0x8", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0x170cdc1e00", expectedBaseFee: "0x3b9aca00", expectedGasUsed: 0.5},
+		{name: "Valid request by latest", blockCount: 1, lastBlock: "latest", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0x170cdc1e00", expectedBaseFee: "0x3b9aca00", expectedGasUsed: 0.5},
+		{name: "Valid request by earliest", blockCount: 1, lastBlock: "earliest", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0x170cdc1e00", expectedBaseFee: "0x3b9aca00", expectedGasUsed: 0.5},
+		{name: "Request on the same block", blockCount: 1, lastBlock: "0x1", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0x170cdc1e00", expectedBaseFee: "0x3b9aca00", expectedGasUsed: 0.5},
+		{name: "Request on future block", blockCount: 1, lastBlock: "0x9", rewardPercentiles: []interface{}{0.5}, expectedOldest: "0x1", expectedReward: "0x170cdc1e00", expectedBaseFee: "0x3b9aca00", expectedGasUsed: 0.5},
+		{name: "Block count truncates", blockCount: 1025, lastBlock: "latest", rewardPercentiles: []interface{}{25}, expectedOldest: "0x1", expectedReward: "0x170cdc1e00", expectedBaseFee: "0x3b9aca00", expectedGasUsed: 0.5},
 		{name: "Too many percentiles", blockCount: 10, lastBlock: "latest", rewardPercentiles: make([]interface{}, 101), expectedError: errors.New("rewardPercentiles length must be less than or equal to 100")},
 		{name: "Invalid percentiles order", blockCount: 10, lastBlock: "latest", rewardPercentiles: []interface{}{99, 1}, expectedError: errors.New("invalid reward percentiles: must be ascending and between 0 and 100")},
 	}
@@ -103,6 +104,7 @@ func TestFeeHistory(t *testing.T) {
 				require.False(t, errorExists)
 
 				resObj = resObj["result"].(map[string]interface{})
+
 				require.Equal(t, tc.expectedOldest, resObj["oldestBlock"].(string))
 				rewards, ok := resObj["reward"].([]interface{})
 
@@ -111,6 +113,7 @@ func TestFeeHistory(t *testing.T) {
 				reward, ok := rewards[0].([]interface{})
 				require.True(t, ok, "Expected reward to be a slice of interfaces")
 				require.Equal(t, 1, len(reward), "Expected exactly one sub-item in reward")
+
 				require.Equal(t, tc.expectedReward, reward[0].(string), "Reward does not match expected value")
 
 				require.Equal(t, tc.expectedBaseFee, resObj["baseFeePerGas"].([]interface{})[0].(string))
@@ -164,5 +167,50 @@ func TestMaxPriorityFeePerGas(t *testing.T) {
 	Ctx = Ctx.WithBlockHeight(1)
 	// Mimic request sending and handle the response
 	resObj := sendRequestGood(t, "maxPriorityFeePerGas")
-	assert.Equal(t, "0xa", resObj["result"])
+	assert.Equal(t, "0x3b9aca00", resObj["result"])
+}
+
+func TestGasPriceLogic(t *testing.T) {
+	oneGwei := big.NewInt(1000000000)
+	onePointOneGwei := big.NewInt(1100000000)
+	tests := []struct {
+		name                  string
+		baseFee               *big.Int
+		totalGasUsedPrevBlock uint64
+		medianRewardPrevBlock *big.Int
+		expectedGasPrice      *big.Int
+	}{
+		{
+			name:                  "chain is not congested",
+			baseFee:               oneGwei,
+			totalGasUsedPrevBlock: 21000,
+			medianRewardPrevBlock: oneGwei,
+			expectedGasPrice:      onePointOneGwei,
+		},
+		{
+			name:                  "chain is congested",
+			baseFee:               oneGwei,
+			totalGasUsedPrevBlock: 9000000, // 9mil
+			medianRewardPrevBlock: big.NewInt(2000000000),
+			expectedGasPrice:      big.NewInt(3000000000),
+		},
+		{
+			name:                  "prev block has 1 tx with very high reward",
+			baseFee:               oneGwei,
+			totalGasUsedPrevBlock: 21000,                   // not congested
+			medianRewardPrevBlock: big.NewInt(99000000000), // very high reward
+			expectedGasPrice:      onePointOneGwei,         // gas price doesn't spike
+		},
+	}
+	for _, test := range tests {
+		i := evmrpc.NewInfoAPI(nil, nil, nil, nil, t.TempDir(), 1024, evmrpc.ConnectionTypeHTTP)
+		gasPrice, err := i.GasPriceHelper(
+			context.Background(),
+			test.baseFee,
+			test.totalGasUsedPrevBlock,
+			test.medianRewardPrevBlock,
+		)
+		require.Nil(t, err)
+		require.Equal(t, test.expectedGasPrice, gasPrice.ToInt())
+	}
 }

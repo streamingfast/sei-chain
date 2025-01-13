@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sei-protocol/sei-chain/utils/helpers"
+
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkacltypes "github.com/cosmos/cosmos-sdk/types/accesscontrol"
@@ -27,7 +29,8 @@ import (
 )
 
 func TestPreprocessAnteHandler(t *testing.T) {
-	k, ctx := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
+	ctx := testkeeper.EVMTestApp.GetContextForDeliverTx(nil)
 	handler := ante.NewEVMPreprocessDecorator(k, k.AccountKeeper())
 	privKey := testkeeper.MockPrivateKey()
 	seiAddr, evmAddr := testkeeper.PrivateKeyToAddresses(privKey)
@@ -68,7 +71,8 @@ func TestPreprocessAnteHandler(t *testing.T) {
 }
 
 func TestPreprocessAnteHandlerUnprotected(t *testing.T) {
-	k, ctx := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
+	ctx := testkeeper.EVMTestApp.GetContextForDeliverTx(nil)
 	handler := ante.NewEVMPreprocessDecorator(k, k.AccountKeeper())
 	gasPrice := sdk.NewInt(73141930316)
 	amt := sdk.NewInt(270000000000000000)
@@ -96,7 +100,8 @@ func TestPreprocessAnteHandlerUnprotected(t *testing.T) {
 }
 
 func TestPreprocessAssociateTx(t *testing.T) {
-	k, ctx := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
+	ctx := testkeeper.EVMTestApp.GetContextForDeliverTx(nil)
 	handler := ante.NewEVMPreprocessDecorator(k, k.AccountKeeper())
 	privKey := testkeeper.MockPrivateKey()
 	testPrivHex := hex.EncodeToString(privKey.Bytes())
@@ -139,7 +144,8 @@ func TestPreprocessAssociateTx(t *testing.T) {
 }
 
 func TestPreprocessAssociateTxWithWeiBalance(t *testing.T) {
-	k, ctx := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
+	ctx := testkeeper.EVMTestApp.GetContextForDeliverTx(nil)
 	handler := ante.NewEVMPreprocessDecorator(k, k.AccountKeeper())
 	privKey := testkeeper.MockPrivateKey()
 	testPrivHex := hex.EncodeToString(privKey.Bytes())
@@ -186,7 +192,7 @@ func TestGetVersion(t *testing.T) {
 }
 
 func TestAnteDeps(t *testing.T) {
-	k, _ := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
 	handler := ante.NewEVMPreprocessDecorator(k, k.AccountKeeper())
 	msg, _ := types.NewMsgEVMTransaction(&ethtx.LegacyTx{GasLimit: 100})
 	msg.Derived = &derived.Derived{
@@ -202,7 +208,8 @@ func TestAnteDeps(t *testing.T) {
 }
 
 func TestEVMAddressDecorator(t *testing.T) {
-	k, ctx := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
+	ctx := testkeeper.EVMTestApp.GetContextForDeliverTx(nil)
 	privKey := testkeeper.MockPrivateKey()
 	sender, evmAddr := testkeeper.PrivateKeyToAddresses(privKey)
 	recipient, _ := testkeeper.MockAddressPair()
@@ -219,7 +226,8 @@ func TestEVMAddressDecorator(t *testing.T) {
 }
 
 func TestIsAccountBalancePositive(t *testing.T) {
-	k, ctx := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
+	ctx := testkeeper.EVMTestApp.GetContextForDeliverTx(nil)
 	s1, e1 := testkeeper.MockAddressPair()
 	s2, e2 := testkeeper.MockAddressPair()
 	s3, e3 := testkeeper.MockAddressPair()
@@ -251,7 +259,8 @@ func (m MockTxIncompatible) ValidateBasic() error {
 }
 
 func TestEVMAddressDecoratorContinueDespiteErrors(t *testing.T) {
-	k, ctx := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
+	ctx := testkeeper.EVMTestApp.GetContextForDeliverTx(nil)
 	handler := ante.NewEVMAddressDecorator(k, k.AccountKeeper())
 
 	_, err := handler.AnteHandle(ctx, MockTxIncompatible{}, false, func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
@@ -292,7 +301,8 @@ func TestEVMAddressDecoratorContinueDespiteErrors(t *testing.T) {
 }
 
 func TestMigrateBalance(t *testing.T) {
-	k, ctx := testkeeper.MockEVMKeeper()
+	k := &testkeeper.EVMTestApp.EvmKeeper
+	ctx := testkeeper.EVMTestApp.GetContextForDeliverTx(nil)
 	admin, _ := testkeeper.MockAddressPair()
 	seiAddr, evmAddr := testkeeper.MockAddressPair()
 	k.BankKeeper().AddCoins(ctx, sdk.AccAddress(evmAddr[:]), sdk.NewCoins(sdk.NewCoin("usei", sdk.NewInt(2))), false)
@@ -302,7 +312,8 @@ func TestMigrateBalance(t *testing.T) {
 			k.AccountKeeper().NewAccountWithAddress(ctx, sdk.AccAddress(evmAddr[:])).(*authtypes.BaseAccount),
 			sdk.NewCoins(sdk.NewCoin("usei", sdk.NewInt(1))), math.MaxInt64, admin),
 	))
-	require.Nil(t, ante.MigrateBalance(ctx, k, evmAddr, seiAddr))
+	associateHelper := helpers.NewAssociationHelper(k, k.BankKeeper(), k.AccountKeeper())
+	require.Nil(t, associateHelper.MigrateBalance(ctx, evmAddr, seiAddr))
 	require.Equal(t, int64(1), k.BankKeeper().SpendableCoins(ctx, seiAddr).AmountOf("usei").Int64())
 	require.Equal(t, int64(0), k.BankKeeper().LockedCoins(ctx, seiAddr).AmountOf("usei").Int64())
 	require.Equal(t, int64(0), k.BankKeeper().SpendableCoins(ctx, sdk.AccAddress(evmAddr[:])).AmountOf("usei").Int64())

@@ -5,6 +5,7 @@ const { ethers, upgrades } = require('hardhat');
 const { getImplementationAddress } = require('@openzeppelin/upgrades-core');
 const { deployEvmContract, setupSigners, fundAddress, getCosmosTx, getEvmTx} = require("./lib")
 const axios = require("axios");
+const { default: BigNumber } = require("bignumber.js");
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -92,7 +93,7 @@ describe("EVM Test", function () {
       testToken = await TestToken.deploy("TestToken", "TTK");
 
       const EVMCompatibilityTester = await ethers.getContractFactory("EVMCompatibilityTester");
-      evmTester = await EVMCompatibilityTester.deploy();
+      evmTester = await EVMCompatibilityTester.deploy({ gasPrice: ethers.parseUnits('100', 'gwei') });
 
       await Promise.all([evmTester.waitForDeployment(), testToken.waitForDeployment()])
 
@@ -129,7 +130,7 @@ describe("EVM Test", function () {
 
     describe("Contract Factory", function() {
       it("should deploy a second contract from createToken", async function () {
-        const txResponse = await evmTester.createToken("TestToken", "TTK");
+        const txResponse = await evmTester.createToken("TestToken", "TTK", { gasPrice: ethers.parseUnits('100', 'gwei') });
         const testerAddress = await evmTester.getAddress();
         const receipt = await txResponse.wait();
         const newTokenAddress = receipt.logs[0].address;
@@ -147,7 +148,7 @@ describe("EVM Test", function () {
 
           await delay()
           // Set balance
-          await testToken.setBalance(owner.address, setAmount);
+            await testToken.setBalance(owner.address, setAmount, { gasPrice: ethers.parseUnits('100', 'gwei') });
 
           // Prepare call data for balanceOf function of MyToken
           const balanceOfData = testToken.interface.encodeFunctionData("balanceOf", [owner.address]);
@@ -168,7 +169,7 @@ describe("EVM Test", function () {
     describe("Msg Properties", function() {
       it("Should store and retrieve msg properties correctly", async function() {
         // Store msg properties
-        const txResponse = await evmTester.storeMsgProperties({ value: 1 });
+        const txResponse = await evmTester.storeMsgProperties({ value: 1, gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();
 
         // Retrieve stored msg properties
@@ -214,7 +215,7 @@ describe("EVM Test", function () {
       it("Should set the address correctly and emit an event", async function () {
         // Call setAddress
         await delay()
-        const txResponse = await evmTester.setAddressVar();
+        const txResponse = await evmTester.setAddressVar({ gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();  // Wait for the transaction to be mined
         await expect(txResponse)
             .to.emit(evmTester, 'AddressSet')
@@ -224,7 +225,7 @@ describe("EVM Test", function () {
       it("Should set the bool correctly and emit an event", async function () {
         // Call setBoolVar
         await delay()
-        const txResponse = await evmTester.setBoolVar(true);
+        const txResponse = await evmTester.setBoolVar(true, { gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();  // Wait for the transaction to be mined
 
         debug(JSON.stringify(txResponse))
@@ -240,7 +241,7 @@ describe("EVM Test", function () {
       it("Should set the uint256 correctly and emit an event", async function () {
         // Call setBoolVar
         await delay()
-        const txResponse = await evmTester.setUint256Var(12345);
+        const txResponse = await evmTester.setUint256Var(12345, { gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();  // Wait for the transaction to be mined
 
         debug(JSON.stringify(txResponse))
@@ -278,7 +279,7 @@ describe("EVM Test", function () {
 
       it("Should trace a call with timestamp", async function () {
         await delay()
-        const txResponse = await evmTester.setTimestamp();
+        const txResponse = await evmTester.setTimestamp({ gasPrice: ethers.parseUnits('100', 'gwei') });
         const receipt = await txResponse.wait();  // Wait for the transaction to be mined
 
         // get the timestamp that was saved off during setTimestamp()
@@ -314,7 +315,7 @@ describe("EVM Test", function () {
 
       it("Should set the string correctly and emit an event", async function () {
         await delay()
-        const txResponse = await evmTester.setStringVar("test");
+        const txResponse = await evmTester.setStringVar("test", { gasPrice: ethers.parseUnits('100', 'gwei') });
         const receipt = await txResponse.wait();  // Wait for the transaction to be mined
 
         const cosmosTx = await getCosmosTx(ethers.provider, receipt.hash)
@@ -331,7 +332,7 @@ describe("EVM Test", function () {
 
       it("Should set the bytes correctly and emit an event", async function () {
         await delay()
-        const txResponse = await evmTester.setBytesVar(ethers.toUtf8Bytes("test"));
+        const txResponse = await evmTester.setBytesVar(ethers.toUtf8Bytes("test"), { gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();
 
         await expect(txResponse)
@@ -346,7 +347,7 @@ describe("EVM Test", function () {
 
         await delay()
         // Send the transaction and wait for it to be confirmed
-        const txResponse = await evmTester.setBalance(owner.address, testAmount);
+        const txResponse = await evmTester.setBalance(owner.address, testAmount, { gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();
         await delay()
         // Now check the balance
@@ -357,7 +358,7 @@ describe("EVM Test", function () {
       it("Should store and retrieve a private var correctly", async function () {
         const testAmount = 12345;
         await delay()
-        const txResponse = await evmTester.storeData(testAmount);
+        const txResponse = await evmTester.storeData(testAmount, { gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();  // Wait for the transaction to be mined
         await delay()
         const retrievedAmount = await evmTester.retrieveData();
@@ -378,7 +379,7 @@ describe("EVM Test", function () {
 
     describe("Assembly", function(){
       it("Should add numbers correctly", async function () {
-        expect(await evmTester.addNumbers(10, 20)).to.equal(30);
+        expect(await evmTester.addNumbers(10, 20, { gasPrice: ethers.parseUnits('100', 'gwei') })).to.equal(30);
       });
 
       it("Should return the current balance of the contract", async function () {
@@ -391,12 +392,18 @@ describe("EVM Test", function () {
       it("Should return correct value from readFromStorage(index)", async function () {
         const testAmount = 12345;
         await delay()
-        const txResponse = await evmTester.storeData(testAmount);
+        const txResponse = await evmTester.storeData(testAmount, { gasPrice: ethers.parseUnits('100', 'gwei') });
         await delay()
         await txResponse.wait();  // Wait for the transaction to be mined
 
         const retrievedAmount = await evmTester.readFromStorage(0);
         expect(retrievedAmount).to.equal(BigInt(testAmount));
+      });
+
+      it("Should work for BLOBBASEFEE opcode", async function () {
+
+        const blobBaseFee = await evmTester.getBlobBaseFee();
+        expect(blobBaseFee).to.deep.equal(BigInt(1));
       });
     })
 
@@ -477,12 +484,12 @@ describe("EVM Test", function () {
           gasPrice: higherGasPrice,
           type: 1,
         });
-        const receipt = await txResponse.wait();
+        await txResponse.wait();
 
         const balanceAfter = await ethers.provider.getBalance(owner);
 
         const diff = balanceBefore - balanceAfter;
-        expect(diff).to.equal(21000 * higherGasPrice);
+        expect(diff).to.be.greaterThan(21000 * gasPrice);
 
         const success = await sendTransactionAndCheckGas(owner, owner, 0)
         expect(success).to.be.true
@@ -490,24 +497,24 @@ describe("EVM Test", function () {
 
       describe("EIP-1559", async function() {
         const zero = ethers.parseUnits('0', 'ether')
-        const twoGwei = ethers.parseUnits("2", "gwei");
-        const oneGwei = ethers.parseUnits("1", "gwei");
+        const highgp = ethers.parseUnits("400", "gwei");
+        const gp = ethers.parseUnits("100", "gwei");
 
         const testCases = [
-          ["No truncation from max priority fee", oneGwei, oneGwei],
-          ["With truncation from max priority fee", oneGwei, twoGwei],
-          ["With complete truncation from max priority fee", zero, twoGwei]
+          ["No truncation from max priority fee", gp, gp],
+          ["With truncation from max priority fee", gp, highgp],
+          ["With complete truncation from max priority fee", zero, highgp]
         ];
 
         it("Should be able to send many EIP-1559 txs", async function () {
-          const oneGwei = ethers.parseUnits("1", "gwei");
+          const gp = ethers.parseUnits("100", "gwei");
           const zero = ethers.parseUnits('0', 'ether')
           for (let i = 0; i < 10; i++) {
             const txResponse = await owner.sendTransaction({
               to: owner.address,
               value: zero,
-              maxPriorityFeePerGas: oneGwei,
-              maxFeePerGas: oneGwei,
+              maxPriorityFeePerGas: gp,
+              maxFeePerGas: gp,
               type: 2
             });
             await txResponse.wait();
@@ -610,8 +617,8 @@ describe("EVM Test", function () {
       it("Should retrieve a transaction receipt", async function () {
         const txResponse = await evmTester.setBoolVar(false, {
           type: 2, // force it to be EIP-1559
-          maxPriorityFeePerGas: ethers.parseUnits('100', 'gwei'), // set gas high just to get it included
-          maxFeePerGas: ethers.parseUnits('100', 'gwei')
+          maxPriorityFeePerGas: ethers.parseUnits('400', 'gwei'), // set gas high just to get it included
+          maxFeePerGas: ethers.parseUnits('400', 'gwei')
         });
         await txResponse.wait();
         const receipt = await ethers.provider.getTransactionReceipt(txResponse.hash);
@@ -690,7 +697,7 @@ describe("EVM Test", function () {
         const numberOfEvents = 5;
 
         // check receipt
-        const txResponse = await evmTester.emitMultipleLogs(numberOfEvents);
+        const txResponse = await evmTester.emitMultipleLogs(numberOfEvents, { gasPrice: ethers.parseUnits('100', 'gwei') });
         const receipt = await txResponse.wait();
         expect(receipt.logs.length).to.equal(numberOfEvents)
         for(let i=0; i<receipt.logs.length; i++) {
@@ -714,7 +721,7 @@ describe("EVM Test", function () {
       it("Should fetch logs for a specific event", async function () {
         // Emit an event by making a transaction
         const blockNumber = await ethers.provider.getBlockNumber();
-        const txResponse = await evmTester.setBoolVar(true);
+        const txResponse = await evmTester.setBoolVar(true, { gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();
 
         // Create a filter to get logs
@@ -746,7 +753,7 @@ describe("EVM Test", function () {
         ethers.provider.on(filter, listener);
 
         // Trigger the event
-        const txResponse = await evmTester.setBoolVar(false);
+        const txResponse = await evmTester.setBoolVar(false, { gasPrice: ethers.parseUnits('100', 'gwei') });
         await txResponse.wait();
       });
 
@@ -801,7 +808,7 @@ describe("EVM Test", function () {
 
             // Emit an event by making a transaction
             for (let i = 0; i < numTxs; i++) {
-              const txResponse = await evmTester.emitDummyEvent("test", i);
+              const txResponse = await evmTester.emitDummyEvent("test", i, { gasPrice: ethers.parseUnits('100', 'gwei') });
               await txResponse.wait();
             }
             blockEnd = await ethers.provider.getBlockNumber();
@@ -814,7 +821,7 @@ describe("EVM Test", function () {
               fromBlock: blockStart,
               toBlock: blockEnd,
             };
-          
+
             const logs = await ethers.provider.getLogs(filter);
             expect(logs).to.be.an('array');
             expect(logs.length).to.equal(numTxs);
@@ -826,7 +833,7 @@ describe("EVM Test", function () {
               toBlock: blockEnd,
               topics: [ethers.id("DummyEvent(string,bool,address,uint256,bytes)")]
             };
-          
+
             const logs = await ethers.provider.getLogs(filter);
             expect(logs).to.be.an('array');
             expect(logs.length).to.equal(numTxs);
@@ -839,7 +846,7 @@ describe("EVM Test", function () {
               toBlock: blockEnd,
               topics: [ethers.id("DummyEvent(string,bool,address,uint256,bytes)")]
             };
-          
+
             const logs = await ethers.provider.getLogs(filter);
             const blockHash = logs[0].blockHash;
 
@@ -867,9 +874,9 @@ describe("EVM Test", function () {
                 paddedOwnerAddr,
               ]
             };
-          
+
             const logs = await ethers.provider.getLogs(filter1);
-          
+
             expect(logs).to.be.an('array');
             expect(logs.length).to.equal(numTxs);
 
@@ -885,7 +892,7 @@ describe("EVM Test", function () {
             };
 
             const logs2 = await ethers.provider.getLogs(filter1);
-          
+
             expect(logs2).to.be.an('array');
             expect(logs2.length).to.equal(numTxs);
           });
@@ -901,7 +908,7 @@ describe("EVM Test", function () {
                 "0x0000000000000000000000000000000000000000000000000000000000000003",
               ]
             };
-          
+
             const logs1 = await ethers.provider.getLogs(filter1);
             expect(logs1).to.be.an('array');
             expect(logs1.length).to.equal(1);
@@ -948,7 +955,7 @@ describe("EVM Test", function () {
                 ethers.id("nonexistent event string"),
               ]
             };
-          
+
             const logs = await ethers.provider.getLogs(filter);
             expect(logs).to.be.an('array');
             expect(logs.length).to.equal(0);
@@ -997,7 +1004,7 @@ describe("EVM Test", function () {
 
         // increment value
         debug("Incrementing value...")
-        const resp = await box.boxIncr();
+        const resp = await box.boxIncr({ gasPrice: ethers.parseUnits('100', 'gwei') });
         await resp.wait();
 
         // make sure value is incremented
@@ -1052,7 +1059,7 @@ describe("EVM Test", function () {
           value: usei,
         });
         await txResponse.wait();  // Wait for the transaction to be mined
-      
+
         // Check that the contract received the ETH
         const contractBalance = await ethers.provider.getBalance(evmAddr);
         expect(contractBalance - initialBalance).to.equal(usei);
@@ -1086,6 +1093,7 @@ describe("EVM Validations ", function() {
       await setupSigners(await hre.ethers.getSigners())
       signer = generateWallet()
       await fundAddress(await signer.getAddress())
+      await sleep(3000)
     })
 
     it("should prevent wrong chainId for eip-155 txs", async function() {
@@ -1097,9 +1105,9 @@ describe("EVM Validations ", function() {
         chainId: "0x12345",
         type: 2,
         nonce: nonce,
-        maxPriorityFeePerGas: 21000,
+        maxPriorityFeePerGas: 400000000000,
         gasLimit: 21000,
-        maxFeePerGas:10000000000})
+        maxFeePerGas: 400000000000})
 
       const nodeUrl = 'http://localhost:8545';
       const response = await axios.post(nodeUrl, {

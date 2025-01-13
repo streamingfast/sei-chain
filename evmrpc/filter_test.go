@@ -1,13 +1,10 @@
 package evmrpc_test
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/sei-protocol/sei-chain/x/evm/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,18 +90,20 @@ func TestFilterUninstall(t *testing.T) {
 	require.False(t, uninstallSuccess)
 }
 
-func TestFilterGetLogs(t *testing.T) {
-	tests := []struct {
-		name      string
-		blockHash *common.Hash
-		fromBlock string
-		toBlock   string
-		addrs     []common.Address
-		topics    [][]common.Hash
-		wantErr   bool
-		wantLen   int
-		check     func(t *testing.T, log map[string]interface{})
-	}{
+type GetFilterLogTests struct {
+	name      string
+	blockHash *common.Hash
+	fromBlock string
+	toBlock   string
+	addrs     []common.Address
+	topics    [][]common.Hash
+	wantErr   bool
+	wantLen   int
+	check     func(t *testing.T, log map[string]interface{})
+}
+
+func getCommonFilterLogTests() []GetFilterLogTests {
+	tests := []GetFilterLogTests{
 		{
 			name:      "filter by single address",
 			fromBlock: "0x2",
@@ -128,11 +127,13 @@ func TestFilterGetLogs(t *testing.T) {
 			wantLen: 4,
 		},
 		{
-			name:    "filter by single topic with default range",
-			topics:  [][]common.Hash{{common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000123")}},
-			wantErr: false,
+			name:      "filter by single topic with block range",
+			fromBlock: "0x8",
+			toBlock:   "0x8",
+			topics:    [][]common.Hash{{common.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111")}},
+			wantErr:   false,
 			check: func(t *testing.T, log map[string]interface{}) {
-				require.Equal(t, "0x0000000000000000000000000000000000000000000000000000000000000123", log["topics"].([]interface{})[0].(string))
+				require.Equal(t, "0x1111111111111111111111111111111111111111111111111111111111111111", log["topics"].([]interface{})[0].(string))
 			},
 			wantLen: 1,
 		},
@@ -183,10 +184,73 @@ func TestFilterGetLogs(t *testing.T) {
 			wantLen: 3,
 		},
 	}
+	return tests
+}
 
+func TestFilterGetLogs(t *testing.T) {
+	testFilterGetLogs(t, "eth", getCommonFilterLogTests())
+}
+
+func TestFilterSeiGetLogs(t *testing.T) {
+	// make sure we pass all the eth_ namespace tests
+	testFilterGetLogs(t, "sei", getCommonFilterLogTests())
+
+	// test where we get a synthetic log
+	testFilterGetLogs(t, "sei", []GetFilterLogTests{
+		{
+			name:      "filter by single synthetic address",
+			fromBlock: "0x64",
+			toBlock:   "0x64",
+			addrs:     []common.Address{common.HexToAddress("0x1111111111111111111111111111111111111116")},
+			wantErr:   false,
+			check: func(t *testing.T, log map[string]interface{}) {
+				require.Equal(t, "0x1111111111111111111111111111111111111116", log["address"].(string))
+			},
+			wantLen: 1,
+		},
+		{
+			name:      "filter by single topic, include synethetic logs",
+			topics:    [][]common.Hash{{common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000234")}},
+			wantErr:   false,
+			fromBlock: "0x64",
+			toBlock:   "0x64",
+			check: func(t *testing.T, log map[string]interface{}) {
+				require.Equal(t, "0x0000000000000000000000000000000000000000000000000000000000000234", log["topics"].([]interface{})[0].(string))
+			},
+			wantLen: 1,
+		},
+		{
+			name:    "filter by single topic with default range, include synethetic logs",
+			topics:  [][]common.Hash{{common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000234")}},
+			wantErr: false,
+			check: func(t *testing.T, log map[string]interface{}) {
+				require.Equal(t, "0x0000000000000000000000000000000000000000000000000000000000000234", log["topics"].([]interface{})[0].(string))
+			},
+			wantLen: 1,
+		},
+	})
+}
+
+func TestFilterEthEndpointReturnsNormalEvmLogEvenIfSyntheticLogIsInSameBlock(t *testing.T) {
+	testFilterGetLogs(t, "eth", []GetFilterLogTests{
+		{
+			name:      "normal evm log is returned even if synthetic log is in the same block",
+			fromBlock: "0x64", // 100
+			toBlock:   "0x64",
+			wantErr:   false,
+			check: func(t *testing.T, log map[string]interface{}) {
+				// check that none of the events have the synthetic hash
+				syntheticHash := multiTxBlockSynthTx.Hash()
+				require.NotEqual(t, syntheticHash.Hex(), log["transactionHash"].(string))
+			},
+			wantLen: 2,
+		},
+	})
+}
+
+func testFilterGetLogs(t *testing.T, namespace string, tests []GetFilterLogTests) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fmt.Println(tt.name)
 			filterCriteria := map[string]interface{}{
 				"address": tt.addrs,
 				"topics":  tt.topics,
@@ -198,7 +262,14 @@ func TestFilterGetLogs(t *testing.T) {
 				filterCriteria["fromBlock"] = tt.fromBlock
 				filterCriteria["toBlock"] = tt.toBlock
 			}
-			resObj := sendRequestGood(t, "getLogs", filterCriteria)
+			var resObj map[string]interface{}
+			if namespace == "eth" {
+				resObj = sendRequestGood(t, "getLogs", filterCriteria)
+			} else if namespace == "sei" {
+				resObj = sendSeiRequestGood(t, "getLogs", filterCriteria)
+			} else {
+				panic("unknown namespace")
+			}
 			if tt.wantErr {
 				_, ok := resObj["error"]
 				require.True(t, ok)
@@ -249,31 +320,6 @@ func TestFilterGetFilterChanges(t *testing.T) {
 	require.Equal(t, 4, len(logs)) // limited by MaxLogNoBlock config to 4
 	logObj := logs[0].(map[string]interface{})
 	require.Equal(t, "0x2", logObj["blockNumber"].(string))
-
-	// another query
-	bloom := ethtypes.CreateBloom(ethtypes.Receipts{&ethtypes.Receipt{Logs: []*ethtypes.Log{{
-		Address: common.HexToAddress("0x1111111111111111111111111111111111111112"),
-		Topics:  []common.Hash{},
-	}}}})
-	Ctx = Ctx.WithBlockHeight(9)
-	EVMKeeper.MockReceipt(Ctx, common.HexToHash("0x123456789012345678902345678901234567890123456789012345678900005"), &types.Receipt{
-		BlockNumber: 9,
-		LogsBloom:   bloom[:],
-		Logs: []*types.Log{{
-			Address: "0x1111111111111111111111111111111111111114",
-		}},
-	})
-	EVMKeeper.SetTxHashesOnHeight(Ctx, 9, []common.Hash{
-		common.HexToHash("0x123456789012345678902345678901234567890123456789012345678900005"),
-	})
-	EVMKeeper.SetBlockBloom(Ctx, 9, []ethtypes.Bloom{bloom})
-	Ctx = Ctx.WithBlockHeight(9)
-	resObj = sendRequest(t, TestPort, "getFilterChanges", filterId)
-	Ctx = Ctx.WithBlockHeight(8)
-	logs = resObj["result"].([]interface{})
-	require.Equal(t, 1, len(logs))
-	logObj = logs[0].(map[string]interface{})
-	require.Equal(t, "0x9", logObj["blockNumber"].(string))
 
 	// error: filter id does not exist
 	nonExistingFilterId := 1000

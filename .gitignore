@@ -7,6 +7,9 @@ release/
 build/
 cache/
 
+/seid-*
+/libwasmvm.x86_64.so
+
 # Local .terraform directories
 **/.terraform
 
@@ -52,3 +55,6 @@ example/cosmwasm/cw721/target
 
 # Solidity contracts artifacts
 contracts/artifacts
+
+# Integration tests build artifacts
+integration_test/dapp_tests/artifacts

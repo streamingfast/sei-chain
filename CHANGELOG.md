@@ -27,6 +27,162 @@ Ref: https://keepachangelog.com/en/1.0.0/
 -->
 
 # Changelog
+## v6.0.2
+sei-chain
+* [#2018](https://github.com/sei-protocol/sei-chain/pull/2018) Remove TxHashes from EVM module
+* [#2006](https://github.com/sei-protocol/sei-chain/pull/2006) Fix volatile eth_gasPrice
+* [#2005](https://github.com/sei-protocol/sei-chain/pull/2005) Exclude block receipts whose block number do not match
+* [#2004](https://github.com/sei-protocol/sei-chain/pull/2004) Integrate with MinTxsInBlock
+* [#1983](https://github.com/sei-protocol/sei-chain/pull/1983) Handle oracle overflow and rounding to zero
+* [#2002](https://github.com/sei-protocol/sei-chain/pull/2002) Update IBC version to use utc on error msg
+* [#2000](https://github.com/sei-protocol/sei-chain/pull/2000) Catch panic in trace transaction / trace call
+* [#1995](https://github.com/sei-protocol/sei-chain/pull/1995) RPC endpoints for excluding tracing failures
+* [#1993](https://github.com/sei-protocol/sei-chain/pull/1993) Avoid panic in getLogs
+* [#1991](https://github.com/sei-protocol/sei-chain/pull/1991) Add defer recovery for failed txs when tracing and estimating gas
+* [#1988](https://github.com/sei-protocol/sei-chain/pull/1988) getLogs endpoint should check whether or not to include cosmos txs based on namespace
+* [#1984](https://github.com/sei-protocol/sei-chain/pull/1984) Client state pagniation by using filtered pagination
+* [#1982](https://github.com/sei-protocol/sei-chain/pull/1982) Fix method handler crash due to nil min fee per gas
+* [#1974](https://github.com/sei-protocol/sei-chain/pull/1974) Optimize getLogs with parallelization
+* [#1971](https://github.com/sei-protocol/sei-chain/pull/1971) Remove tokenfactory config
+* [#1970](https://github.com/sei-protocol/sei-chain/pull/1970) Add unbonding delegation query
+
+sei-cosmos
+* [#559](https://github.com/sei-protocol/sei-cosmos/pull/559) Fix state sync halt issue
+* [#558](https://github.com/sei-protocol/sei-cosmos/pull/558) Integrate with MinTxsInBlock
+* [#557](https://github.com/sei-protocol/sei-cosmos/pull/557) Fix seid rollback state mismatch error
+* [#555](https://github.com/sei-protocol/sei-cosmos/pull/555) Set earliest version update
+* [#552](https://github.com/sei-protocol/sei-cosmos/pull/552) Add confidential transfer constants
+
+sei-tendermint
+* [#252](https://github.com/sei-protocol/sei-tendermint/pull/252) Add new MinTxsInBlock consensus param
+
+## v6.0.1
+sei-chain
+* [#1956](https://github.com/sei-protocol/sei-chain/pull/1956) Assign owner correctly when there are multiple transfers
+* [#1955](https://github.com/sei-protocol/sei-chain/pull/1955) Add missing modules to migration and add command to export IAVL
+* [#1954](https://github.com/sei-protocol/sei-chain/pull/1954) Enable Queries to IAVL for Non-Migrating Nodes
+* [#1952](https://github.com/sei-protocol/sei-chain/pull/1952) Fix for failed txs in block
+* [#1951](https://github.com/sei-protocol/sei-chain/pull/1951) Add max base fee as a param
+* [#1949](https://github.com/sei-protocol/sei-chain/pull/1949) Be resilient to failing txs in debug trace block
+* [#1941](https://github.com/sei-protocol/sei-chain/pull/1941) Fix eth_getLogs missing events early return
+* [#1932](https://github.com/sei-protocol/sei-chain/pull/1932) Use owner event to populate ERC721 transfer topic
+* [#1930](https://github.com/sei-protocol/sei-chain/pull/1930) Exclude cosmos txs from base fee calculation
+* [#1926](https://github.com/sei-protocol/sei-chain/pull/1926) Refactor x/bank precompile to use dynamic gas
+* [#1922](https://github.com/sei-protocol/sei-chain/pull/1922) Use msg server send in bank precompile
+* [#1913](https://github.com/sei-protocol/sei-chain/pull/1913) Use tendermint store to get Tx hashes instead of storing explicitly
+* [#1906](https://github.com/sei-protocol/sei-chain/pull/1906) Remove vue code
+* [#1908](https://github.com/sei-protocol/sei-chain/pull/1908) QuerySmart to always use cached ctx
+
+
+sei-cosmos
+* [#551](https://github.com/sei-protocol/sei-cosmos/pull/551) Param change verification
+* [#553](https://github.com/sei-protocol/sei-cosmos/pull/553) Remove unnecessary serving logs
+
+sei-wasmd
+* [#67](https://github.com/sei-protocol/sei-wasmd/pull/67) Emit CW721 token owner before transfer
+* [#65](https://github.com/sei-protocol/sei-wasmd/pull/65) Add QuerySmartSafe in WasmViewKeeper
+
+
+## v6.0.0
+sei-chain
+* [#1905](https://github.com/sei-protocol/sei-chain/pull/1905) Use limited wasm gas meter
+* [#1889](https://github.com/sei-protocol/sei-chain/pull/1889) Fix amino registry for custom modules
+* [#1888](https://github.com/sei-protocol/sei-chain/pull/1888) Set EIP-1559 default values
+* [#1884](https://github.com/sei-protocol/sei-chain/pull/1884) Update gas tip cap param range
+* [#1878](https://github.com/sei-protocol/sei-chain/pull/1878) Add endpoint to estimate gas after simulating calls
+
+sei-cosmos
+* [#547](https://github.com/sei-protocol/sei-cosmos/pull/547) Do not early return for validated tasks in synchronous mode
+* [#544](https://github.com/sei-protocol/sei-cosmos/pull/544) Only apply DeliverTx hooks if there is no error
+* [#538](https://github.com/sei-protocol/sei-cosmos/pull/538) Token allowlist feature
+
+sei-tendermint
+* [#248](https://github.com/sei-protocol/sei-tendermint/pull/248) Improve Peer Score algorithm
+* [#245](https://github.com/sei-protocol/sei-tendermint/pull/245) Exclude unconditional peers when connection limit checking
+* [#244](https://github.com/sei-protocol/sei-tendermint/pull/244) Add new config to speed up block sync
+
+sei-db
+* [#75](https://github.com/sei-protocol/sei-db/pull/75) Online archive node migration
+
+## v5.9.0
+sei-chain
+* [#1867](https://github.com/sei-protocol/sei-chain/pull/1867) Add synthetic events in separate sei endpoints
+* [#1861](https://github.com/sei-protocol/sei-chain/pull/1861) Revert showing wasm txs in EVM RPCs
+* [#1857](https://github.com/sei-protocol/sei-chain/pull/1857) Fix events in 2-hop scenarios
+* [#1856](https://github.com/sei-protocol/sei-chain/pull/1856) Add delegatecall flag to properly detect delegatecalls
+* [#1850](https://github.com/sei-protocol/sei-chain/pull/1853) Fix websocket from_height
+* [#1849](https://github.com/sei-protocol/sei-chain/pull/1849) Reduce block bloom storage
+* [#1844](https://github.com/sei-protocol/sei-chain/pull/1844) Allowlist for token extensions
+
+sei-iavl
+*[#41](https://github.com/sei-protocol/sei-iavl/pull/41) Fix tree versions causing slow restart and OOM
+## v5.8.0
+sei-chain
+* [#1840](https://github.com/sei-protocol/sei-chain/pull/1840) Add migration for new params
+* [#1837](https://github.com/sei-protocol/sei-chain/pull/1837) Move token id from Data to Topic in ERC721 Event
+* [#1836](https://github.com/sei-protocol/sei-chain/pull/1836) Properly handle gas in pointer precompile
+* [#1835](https://github.com/sei-protocol/sei-chain/pull/1835) Check TX nonce before registering hook to bump nonce for failed tx
+* [#1832](https://github.com/sei-protocol/sei-chain/pull/1832) Show CW transactions that have synthetic EVM events in eth_getBlock response
+* [#1831](https://github.com/sei-protocol/sei-chain/pull/1831) Fork event manager when creating EVM snapshots
+* [#1830](https://github.com/sei-protocol/sei-chain/pull/1830) Add wasm contract query gas limit
+* [#1826](https://github.com/sei-protocol/sei-chain/pull/1826) limit MsgExec max nested level
+* [#1821](https://github.com/sei-protocol/sei-chain/pull/1821) Add antehandler for EVM to check gas exceed limit or not
+* [#1818](https://github.com/sei-protocol/sei-chain/pull/1818) Prevent ddos against associate msgs
+* [#1816](https://github.com/sei-protocol/sei-chain/pull/1816) Actually remove dex module
+* [#1813](https://github.com/sei-protocol/sei-chain/pull/1813) Tune Configs
+* [#1812](https://github.com/sei-protocol/sei-chain/pull/1812) Evidence Max Bytes Update
+* [#1785](https://github.com/sei-protocol/sei-chain/pull/1785) Allow CW->ERC pointers to be called through wasmd precompile
+* [#1778](https://github.com/sei-protocol/sei-chain/pull/1778) Bump nonce even if tx fails
+
+sei-cosmos
+* [#535](https://github.com/sei-protocol/sei-cosmos/pull/535) init app earliest version correctly after state sync
+* [#534](https://github.com/sei-protocol/sei-cosmos/pull/534) Stop executing the handler when proposal is submitted
+* [#533](https://github.com/sei-protocol/sei-cosmos/pull/533) Delete kvstore specified in store upgrades
+* [#532](https://github.com/sei-protocol/sei-cosmos/pull/532) Add max gas limit check in ante handler
+* [#528](https://github.com/sei-protocol/sei-cosmos/pull/528) Add logs for snapshot export and impor
+
+sei-wasmd
+* [63](https://github.com/sei-protocol/sei-wasmd/pull/63) Add CW dispatch call depth
+* [62](https://github.com/sei-protocol/sei-wasmd/pull/62) Patch Gas mispricing in CW VM
+
+sei-tendermint
+* [#242](https://github.com/sei-protocol/sei-tendermint/pull/242) Allow hyphen in event query
+
+## v5.7.5
+sei-chain
+* [#1795](https://github.com/sei-protocol/sei-chain/pull/1795) Do not charge gas for feecollector address query
+* [#1782](https://github.com/sei-protocol/sei-chain/pull/1782) Update excessBlobGas and BlobBaseFee to fix simulate evmcontext
+* [#1741](https://github.com/sei-protocol/sei-chain/pull/1782) Update excessBlobGas and BlobBaseFee to fix simulate evmcontext
+
+sei-cosmos
+* [#530](https://github.com/sei-protocol/sei-cosmos/pull/530) Add EVMEntryViaWasmdPrecompile flag
+* [#519](https://github.com/sei-protocol/sei-cosmos/pull/519) Genesis export stream
+* [#529](https://github.com/sei-protocol/sei-cosmos/pull/529) Add DeliverTx callback
+* [#528](https://github.com/sei-protocol/sei-cosmos/pull/528) Add logs for snapshot export and import
+
+sei-wasmd
+* [58](https://github.com/sei-protocol/sei-wasmd/pull/58) Genesis Export OOM
+
+sei-tendermint
+* [#239](https://github.com/sei-protocol/sei-tendermint/pull/239) Use Marshal and UnmarshalJSON For HexBytes
+
+## v5.7.1 & v5.7.2
+sei-chain
+* [#1779](https://github.com/sei-protocol/sei-chain/pull/1779) Fix subscribe logs empty params crash
+* [#1783](https://github.com/sei-protocol/sei-chain/pull/1783) Add meaningful message for eth_call balance override overflow
+* [#1783](https://github.com/sei-protocol/sei-chain/pull/1784) Fix log index on synthetic receipt
+* [#1775](https://github.com/sei-protocol/sei-chain/pull/1775) Disallow sending to direct cast addr after association
+
+sei-wasmd
+* [60](https://github.com/sei-protocol/sei-wasmd/pull/60) Query penalty fixes
+
+sei-tendermint
+* [#237](https://github.com/sei-protocol/sei-tendermint/pull/237) Add metrics for total txs bytes in mempool
+
+## v5.7.0
+sei-chain
+* [#1731](https://github.com/sei-protocol/sei-chain/pull/1731) Remove 1-hop limit
+* [#1663](https://github.com/sei-protocol/sei-chain/pull/1663) Retain pointer address on upgrade
 
 ## v5.6.0
 sei-chain

@@ -5,7 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
+
+	"github.com/sei-protocol/sei-chain/precompiles/wasmd"
+	"github.com/sei-protocol/sei-chain/utils/helpers"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -24,13 +28,16 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/sei-protocol/sei-chain/utils"
 	"github.com/sei-protocol/sei-chain/utils/metrics"
-	"github.com/sei-protocol/sei-chain/x/evm/ante"
 	"github.com/sei-protocol/sei-chain/x/evm/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
 	rpcclient "github.com/tendermint/tendermint/rpc/client"
 	"github.com/tendermint/tendermint/rpc/coretypes"
 )
+
+type CtxIsWasmdPrecompileCallKeyType string
+
+const CtxIsWasmdPrecompileCallKey CtxIsWasmdPrecompileCallKeyType = "CtxIsWasmdPrecompileCallKey"
 
 type SimulationAPI struct {
 	backend        *Backend
@@ -64,6 +71,7 @@ func (s *SimulationAPI) CreateAccessList(ctx context.Context, args ethapi.Transa
 	if blockNrOrHash != nil {
 		bNrOrHash = *blockNrOrHash
 	}
+	ctx = context.WithValue(ctx, CtxIsWasmdPrecompileCallKey, wasmd.IsWasmdCall(args.To))
 	acl, gasUsed, vmerr, err := ethapi.AccessList(ctx, s.backend, bNrOrHash, args)
 	if err != nil {
 		return nil, err
@@ -82,17 +90,40 @@ func (s *SimulationAPI) EstimateGas(ctx context.Context, args ethapi.Transaction
 	if blockNrOrHash != nil {
 		bNrOrHash = *blockNrOrHash
 	}
+	ctx = context.WithValue(ctx, CtxIsWasmdPrecompileCallKey, wasmd.IsWasmdCall(args.To))
 	estimate, err := ethapi.DoEstimateGas(ctx, s.backend, args, bNrOrHash, overrides, s.backend.RPCGasCap())
+	return estimate, err
+}
+
+func (s *SimulationAPI) EstimateGasAfterCalls(ctx context.Context, args ethapi.TransactionArgs, calls []ethapi.TransactionArgs, blockNrOrHash *rpc.BlockNumberOrHash, overrides *ethapi.StateOverride) (result hexutil.Uint64, returnErr error) {
+	startTime := time.Now()
+	defer recordMetricsWithError("eth_estimateGasAfterCalls", s.connectionType, startTime, returnErr)
+	bNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
+	if blockNrOrHash != nil {
+		bNrOrHash = *blockNrOrHash
+	}
+	ctx = context.WithValue(ctx, CtxIsWasmdPrecompileCallKey, wasmd.IsWasmdCall(args.To))
+	estimate, err := ethapi.DoEstimateGasAfterCalls(ctx, s.backend, args, calls, bNrOrHash, overrides, s.backend.RPCEVMTimeout(), s.backend.RPCGasCap())
 	return estimate, err
 }
 
 func (s *SimulationAPI) Call(ctx context.Context, args ethapi.TransactionArgs, blockNrOrHash *rpc.BlockNumberOrHash, overrides *ethapi.StateOverride, blockOverrides *ethapi.BlockOverrides) (result hexutil.Bytes, returnErr error) {
 	startTime := time.Now()
 	defer recordMetrics("eth_call", s.connectionType, startTime, returnErr == nil)
+	defer func() {
+		if r := recover(); r != nil {
+			if strings.Contains(fmt.Sprintf("%s", r), "Int overflow") {
+				returnErr = errors.New("error: balance override overflow")
+			} else {
+				returnErr = fmt.Errorf("something went wrong: %v", r)
+			}
+		}
+	}()
 	if blockNrOrHash == nil {
 		latest := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
 		blockNrOrHash = &latest
 	}
+	ctx = context.WithValue(ctx, CtxIsWasmdPrecompileCallKey, wasmd.IsWasmdCall(args.To))
 	callResult, err := ethapi.DoCall(ctx, s.backend, args, *blockNrOrHash, overrides, blockOverrides, s.backend.RPCEVMTimeout(), s.backend.RPCGasCap())
 	if err != nil {
 		return nil, err
@@ -165,11 +196,12 @@ func (b *Backend) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHas
 	if err != nil {
 		return nil, nil, err
 	}
-	sdkCtx := b.ctxProvider(height)
+	isWasmdCall, ok := ctx.Value(CtxIsWasmdPrecompileCallKey).(bool)
+	sdkCtx := b.ctxProvider(height).WithIsEVM(true).WithEVMEntryViaWasmdPrecompile(ok && isWasmdCall)
 	if err := CheckVersion(sdkCtx, b.keeper); err != nil {
 		return nil, nil, err
 	}
-	return state.NewDBImpl(b.ctxProvider(height), b.keeper, true), b.getHeader(big.NewInt(height)), nil
+	return state.NewDBImpl(sdkCtx, b.keeper, true), b.getHeader(big.NewInt(height)), nil
 }
 
 func (b *Backend) GetTransaction(ctx context.Context, txHash common.Hash) (tx *ethtypes.Transaction, blockHash common.Hash, blockNumber uint64, index uint64, err error) {
@@ -280,7 +312,7 @@ func (b *Backend) StateAtTransaction(ctx context.Context, block *ethtypes.Block,
 	// get the parent block using block.parentHash
 	prevBlockHeight := block.Number().Int64() - 1
 	// Get statedb of parent block from the store
-	statedb := state.NewDBImpl(b.ctxProvider(prevBlockHeight), b.keeper, true)
+	statedb := state.NewDBImpl(b.ctxProvider(prevBlockHeight).WithIsEVM(true), b.keeper, true)
 	if txIndex == 0 && len(block.Transactions()) == 0 {
 		return nil, vm.BlockContext{}, statedb, emptyRelease, nil
 	}
@@ -310,7 +342,7 @@ func (b *Backend) StateAtTransaction(ctx context.Context, block *ethtypes.Block,
 				metrics.IncrementAssociationError("state_at_tx", err)
 				return nil, vm.BlockContext{}, nil, nil, err
 			}
-			if err := ante.NewEVMPreprocessDecorator(b.keeper, b.keeper.AccountKeeper()).AssociateAddresses(statedb.Ctx(), seiAddr, msg.From, nil); err != nil {
+			if err := helpers.NewAssociationHelper(b.keeper, b.keeper.BankKeeper(), b.keeper.AccountKeeper()).AssociateAddresses(statedb.Ctx(), seiAddr, msg.From, nil); err != nil {
 				return nil, vm.BlockContext{}, nil, nil, err
 			}
 		}
@@ -318,6 +350,7 @@ func (b *Backend) StateAtTransaction(ctx context.Context, block *ethtypes.Block,
 		if idx == txIndex {
 			return tx, *blockContext, statedb, emptyRelease, nil
 		}
+		statedb.WithCtx(statedb.Ctx().WithEVMEntryViaWasmdPrecompile(wasmd.IsWasmdCall(tx.To())))
 		// Not yet the searched for transaction, execute on top of the current state
 		vmenv := vm.NewEVM(*blockContext, txContext, statedb, b.ChainConfig(), vm.Config{})
 		statedb.SetTxContext(tx.Hash(), idx)
@@ -347,9 +380,9 @@ func (b *Backend) StateAtBlock(ctx context.Context, block *ethtypes.Block, reexe
 			if !associatedNow {
 				err := types.NewAssociationMissingErr(msg.From.Hex())
 				metrics.IncrementAssociationError("state_at_block", err)
-				return nil, emptyRelease, err
+				continue // don't return error, just continue bc we want to process the rest of the txs and return the statedb
 			}
-			if err := ante.NewEVMPreprocessDecorator(b.keeper, b.keeper.AccountKeeper()).AssociateAddresses(statedb.Ctx(), seiAddr, msg.From, nil); err != nil {
+			if err := helpers.NewAssociationHelper(b.keeper, b.keeper.BankKeeper(), b.keeper.AccountKeeper()).AssociateAddresses(statedb.Ctx(), seiAddr, msg.From, nil); err != nil {
 				return nil, emptyRelease, err
 			}
 		}
@@ -360,7 +393,7 @@ func (b *Backend) StateAtBlock(ctx context.Context, block *ethtypes.Block, reexe
 func (b *Backend) GetEVM(_ context.Context, msg *core.Message, stateDB vm.StateDB, _ *ethtypes.Header, vmConfig *vm.Config, blockCtx *vm.BlockContext) *vm.EVM {
 	txContext := core.NewEVMTxContext(msg)
 	if blockCtx == nil {
-		blockCtx, _ = b.keeper.GetVMBlockContext(b.ctxProvider(LatestCtxHeight), core.GasPool(b.RPCGasCap()))
+		blockCtx, _ = b.keeper.GetVMBlockContext(b.ctxProvider(LatestCtxHeight).WithIsEVM(true).WithEVMEntryViaWasmdPrecompile(wasmd.IsWasmdCall(msg.To)), core.GasPool(b.RPCGasCap()))
 	}
 	return vm.NewEVM(*blockCtx, txContext, stateDB, b.ChainConfig(), *vmConfig)
 }
@@ -399,12 +432,14 @@ func (b *Backend) getBlockHeight(ctx context.Context, blockNrOrHash rpc.BlockNum
 }
 
 func (b *Backend) getHeader(blockNumber *big.Int) *ethtypes.Header {
+	zeroExcessBlobGas := uint64(0)
 	header := &ethtypes.Header{
-		Difficulty: common.Big0,
-		Number:     blockNumber,
-		BaseFee:    b.keeper.GetBaseFeePerGas(b.ctxProvider(LatestCtxHeight)).BigInt(),
-		GasLimit:   b.config.GasCap,
-		Time:       uint64(time.Now().Unix()),
+		Difficulty:    common.Big0,
+		Number:        blockNumber,
+		BaseFee:       b.keeper.GetDynamicBaseFeePerGas(b.ctxProvider(LatestCtxHeight)).TruncateInt().BigInt(),
+		GasLimit:      b.config.GasCap,
+		Time:          uint64(time.Now().Unix()),
+		ExcessBlobGas: &zeroExcessBlobGas,
 	}
 	number := blockNumber.Int64()
 	block, err := blockByNumber(context.Background(), b.tmClient, &number)

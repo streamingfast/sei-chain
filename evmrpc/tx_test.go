@@ -21,12 +21,16 @@ import (
 )
 
 func TestGetTxReceipt(t *testing.T) {
+	testGetTxReceipt(t, "eth")
+}
+
+func testGetTxReceipt(t *testing.T, namespace string) {
 	receipt, err := EVMKeeper.GetReceipt(Ctx, common.HexToHash("0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e"))
 	require.Nil(t, err)
 	receipt.To = ""
 	EVMKeeper.MockReceipt(Ctx, common.HexToHash("0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e"), receipt)
 
-	body := "{\"jsonrpc\": \"2.0\",\"method\": \"eth_getTransactionReceipt\",\"params\":[\"0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e\"],\"id\":\"test\"}"
+	body := fmt.Sprintf("{\"jsonrpc\": \"2.0\",\"method\": \"%s_getTransactionReceipt\",\"params\":[\"0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e\"],\"id\":\"test\"}", namespace)
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d", TestAddr, TestPort), strings.NewReader(body))
 	require.Nil(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -39,10 +43,10 @@ func TestGetTxReceipt(t *testing.T) {
 	resObj = resObj["result"].(map[string]interface{})
 	require.Equal(t, "0x0000000000000000000000000000000000000000000000000000000000000001", resObj["blockHash"].(string))
 	require.Equal(t, "0x8", resObj["blockNumber"].(string))
-	require.Equal(t, "0x7b", resObj["cumulativeGasUsed"].(string))
-	require.Equal(t, "0xa", resObj["effectiveGasPrice"].(string))
+	require.Equal(t, "0x7c", resObj["cumulativeGasUsed"].(string))
+	require.Equal(t, "0x174876e800", resObj["effectiveGasPrice"].(string))
 	require.Equal(t, "0x1234567890123456789012345678901234567890", resObj["from"].(string))
-	require.Equal(t, "0x37", resObj["gasUsed"].(string))
+	require.Equal(t, "0x38", resObj["gasUsed"].(string))
 	logs := resObj["logs"].([]interface{})
 	require.Equal(t, 1, len(logs))
 	log := logs[0].(map[string]interface{})
@@ -64,25 +68,6 @@ func TestGetTxReceipt(t *testing.T) {
 	require.Equal(t, "0x1", resObj["type"].(string))
 	require.Equal(t, "0x1234567890123456789012345678901234567890", resObj["contractAddress"].(string))
 
-	receipt, err = EVMKeeper.GetReceipt(Ctx, common.HexToHash("0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e"))
-	require.Nil(t, err)
-	receipt.ContractAddress = ""
-	receipt.To = "0x1234567890123456789012345678901234567890"
-	EVMKeeper.MockReceipt(Ctx, common.HexToHash("0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e"), receipt)
-	body = "{\"jsonrpc\": \"2.0\",\"method\": \"eth_getTransactionReceipt\",\"params\":[\"0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e\"],\"id\":\"test\"}"
-	req, err = http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d", TestAddr, TestPort), strings.NewReader(body))
-	require.Nil(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	res, err = http.DefaultClient.Do(req)
-	require.Nil(t, err)
-	resBody, err = io.ReadAll(res.Body)
-	require.Nil(t, err)
-	resObj = map[string]interface{}{}
-	require.Nil(t, json.Unmarshal(resBody, &resObj))
-	resObj = resObj["result"].(map[string]interface{})
-	require.Nil(t, resObj["contractAddress"])
-	require.Equal(t, "0x1234567890123456789012345678901234567890", resObj["to"].(string))
-
 	req, err = http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d", TestAddr, TestBadPort), strings.NewReader(body))
 	require.Nil(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -101,9 +86,13 @@ func TestGetTxReceipt(t *testing.T) {
 }
 
 func TestGetTransaction(t *testing.T) {
-	bodyByBlockNumberAndIndex := "{\"jsonrpc\": \"2.0\",\"method\": \"eth_getTransactionByBlockNumberAndIndex\",\"params\":[\"0x8\",\"0x0\"],\"id\":\"test\"}"
-	bodyByBlockHashAndIndex := "{\"jsonrpc\": \"2.0\",\"method\": \"eth_getTransactionByBlockHashAndIndex\",\"params\":[\"0x0000000000000000000000000000000000000000000000000000000000000001\",\"0x0\"],\"id\":\"test\"}"
-	bodyByHash := "{\"jsonrpc\": \"2.0\",\"method\": \"eth_getTransactionByHash\",\"params\":[\"0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e\"],\"id\":\"test\"}"
+	testGetTransaction(t, "eth")
+}
+
+func testGetTransaction(t *testing.T, namespace string) {
+	bodyByBlockNumberAndIndex := fmt.Sprintf("{\"jsonrpc\": \"2.0\",\"method\": \"%s_getTransactionByBlockNumberAndIndex\",\"params\":[\"0x8\",\"0x0\"],\"id\":\"test\"}", namespace)
+	bodyByBlockHashAndIndex := fmt.Sprintf("{\"jsonrpc\": \"2.0\",\"method\": \"%s_getTransactionByBlockHashAndIndex\",\"params\":[\"0x0000000000000000000000000000000000000000000000000000000000000001\",\"0x0\"],\"id\":\"test\"}", namespace)
+	bodyByHash := fmt.Sprintf("{\"jsonrpc\": \"2.0\",\"method\": \"%s_getTransactionByHash\",\"params\":[\"0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e\"],\"id\":\"test\"}", namespace)
 	for _, body := range []string{bodyByBlockNumberAndIndex, bodyByBlockHashAndIndex, bodyByHash} {
 		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d", TestAddr, TestPort), strings.NewReader(body))
 		require.Nil(t, err)
@@ -253,4 +242,65 @@ func TestGetVMError(t *testing.T) {
 	require.Equal(t, "", resObj["result"].(string))
 	resObj = sendRequestGood(t, "getVMError", "0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872f")
 	require.Equal(t, "not found", resObj["error"].(map[string]interface{})["message"])
+}
+
+func TestGetTransactionReceiptFailedTx(t *testing.T) {
+	fromAddr := "0x5b4eba929f3811980f5ae0c5d04fa200f837df4e" // Use the actual address from the block
+
+	// Create a failed receipt with 0 gas used for a contract creation transaction
+	failedReceipt := &types.Receipt{
+		Status:           0, // failed status
+		GasUsed:          0,
+		BlockNumber:      8,
+		TransactionIndex: 0,
+		TxHashHex:        "0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e",
+		From:             fromAddr, // Use the actual from address
+	}
+
+	// Mock the receipt in the keeper
+	txHash := common.HexToHash("0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e")
+	EVMKeeper.MockReceipt(Ctx, txHash, failedReceipt)
+
+	// Create JSON-RPC request
+	body := "{\"jsonrpc\": \"2.0\",\"method\": \"eth_getTransactionReceipt\",\"params\":[\"0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e\"],\"id\":\"test\"}"
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d", TestAddr, TestPort), strings.NewReader(body))
+	require.Nil(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := http.DefaultClient.Do(req)
+	require.Nil(t, err)
+
+	resBody, err := io.ReadAll(res.Body)
+	require.Nil(t, err)
+
+	resObj := map[string]interface{}{}
+	require.Nil(t, json.Unmarshal(resBody, &resObj))
+	resObj = resObj["result"].(map[string]interface{})
+
+	// Verify the receipt was filled with correct information for failed tx
+	require.Equal(t, "0x0", resObj["status"].(string))  // Failed status
+	require.Equal(t, "0x0", resObj["gasUsed"].(string)) // 0 gas used
+	require.Equal(t, "0x8", resObj["blockNumber"].(string))
+	require.Equal(t, "0xf02362077ac075a397344172496b28e913ce5294879d811bb0269b3be20a872e", resObj["transactionHash"].(string))
+	require.Equal(t, fromAddr, resObj["from"].(string))
+
+	// For contract creation transaction
+	require.Equal(t, "0x0000000000000000000000000000000000010203", resObj["to"].(string))
+	require.Nil(t, resObj["contractAddress"])
+}
+
+func TestGetTransactionReceiptExcludeTraceFail(t *testing.T) {
+	body := fmt.Sprintf("{\"jsonrpc\": \"2.0\",\"method\": \"%s_getTransactionReceiptExcludeTraceFail\",\"params\":[\"%s\"],\"id\":\"test\"}", "sei", TestPanicTxHash)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d", TestAddr, TestPort), strings.NewReader(body))
+	require.Nil(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	require.Nil(t, err)
+	resBody, err := io.ReadAll(res.Body)
+	require.Nil(t, err)
+	resObj := map[string]interface{}{}
+	require.Nil(t, json.Unmarshal(resBody, &resObj))
+	require.Greater(t, len(resObj["error"].(map[string]interface{})["message"].(string)), 0)
+	require.Nil(t, resObj["result"])
 }
