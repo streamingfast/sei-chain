@@ -26,9 +26,11 @@ COPY ./go.mod /work/go.mod
 COPY ./go.sum /work/go.sum
 
 # FIXME: Handle multi-arch build, for now we have hard-coded the x86_64 part, but we should be able to build for arm64 as well
+# FIXME: The export WASM_VERSION="$(go list -m all | grep github.com/CosmWasm/wasmvm | awk '{print $2}')"; \ is now wrong because
+#        Sei forked the repository from version 1.5.4 but the `sei-chain` go.mod list `github.com/CosmWasm/wasmvm@v1.5.5`.
 RUN apk add --no-cache wget && cd /work; \
     export ARCH=$(uname -m); \
-    export WASM_VERSION="$(go list -m all | grep github.com/CosmWasm/wasmvm | awk '{print $2}')"; \
+    export WASM_VERSION="v1.5.4"; \
     wget -O "/lib/libwasmvm.x86_64.${WASM_VERSION}.so" https://github.com/CosmWasm/wasmvm/releases/download/${WASM_VERSION}/libwasmvm.x86_64.so && \
     printf "${WASM_VERSION}" > /lib/libwasmvm.x86_64.so.version
 
