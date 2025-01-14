@@ -26,11 +26,14 @@ COPY ./go.mod /work/go.mod
 COPY ./go.sum /work/go.sum
 
 # FIXME: Handle multi-arch build, for now we have hard-coded the x86_64 part, but we should be able to build for arm64 as well
-# FIXME: The export WASM_VERSION="$(go list -m all | grep github.com/CosmWasm/wasmvm | awk '{print $2}')"; \ is now wrong because
-#        Sei forked the repository from version 1.5.4 but the `sei-chain` go.mod list `github.com/CosmWasm/wasmvm@v1.5.5`.
 RUN apk add --no-cache wget && cd /work; \
     export ARCH=$(uname -m); \
-    export WASM_VERSION="v1.5.4"; \
+    # Currently github.com/CosmWasm/wasmvm is being overriden by github.com/sei-protocol/sei-wasmvm
+    # (see go.mod). However the rust precompiles are still fetched from the upstream repository.
+    # Here we assume that the sei-wasm release version is prefixed with the wasmvm release version
+    # with the matching precompiles. Therefore, to compute the download url, we just strip the suffix
+    # of the sei-wasm release version.
+    export WASM_VERSION=$(go list -f {{.Replace.Version}} -m github.com/CosmWasm/wasmvm | sed s/-.*//); \
     wget -O "/lib/libwasmvm.x86_64.${WASM_VERSION}.so" https://github.com/CosmWasm/wasmvm/releases/download/${WASM_VERSION}/libwasmvm.x86_64.so && \
     printf "${WASM_VERSION}" > /lib/libwasmvm.x86_64.so.version
 
