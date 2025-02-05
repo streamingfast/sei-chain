@@ -1,4 +1,4 @@
-FROM ubuntu:23.10 AS base
+FROM ubuntu:22.04 AS base
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ ENV PATH="/app:${PATH}"
 
 FROM base AS fireeth_download
 
-ARG FIREETH="v2.6.7"
+ARG FIREETH="v2.9.3"
 
 # Download and extract the binary file
 RUN curl -LO https://github.com/streamingfast/firehose-ethereum/releases/download/${FIREETH}/firehose-ethereum_linux_x86_64.tar.gz \
