@@ -22,8 +22,8 @@ The `feature/firehose-tracer` is the PR branch that tracks `origin/main` branch,
 ```bash
 git fetch origin
 
-# Found correct tag to bump to, we will use `v5.5.6`
-export VERSION=v5.5.6
+# Found correct tag to bump to, we will use `v6.0.4`
+export VERSION=v6.0.4
 
 git checkout feature/firehose-tracer-at-latest-release-tag
 git pull
@@ -33,11 +33,19 @@ git merge "${VERSION:?}"
 go test ./...
 git commit
 
+git checkout feature/firehose-tracer
+git pull
+git merge  feature/firehose-tracer-at-latest-release-tag
+# Fix any conflicts and merge, but there is usually no conflicts in this step
+
 git checkout release/firehose
 git pull
 
 git merge feature/firehose-tracer-at-latest-release-tag
 # Fix any conflicts and merge, but there is usually no conflicts in this step
+
+make install
+# Run Battlefield tests, check https://github.com/streamingfast/battlefield-ethereum/edit/master/README.md#chain-tests for what to run
 
 git tag "${VERSION:?}-fh3.0"
 
@@ -46,31 +54,4 @@ git push feature/firehose-tracer-at-latest-release-tag release/firehose "${VERSI
 
 #### Building Binary & Docker
 
-Built manually for now on the GCP VM, here the commands we use to build it in our VM.
-
-> [!IMPORTANT]
-> The instructions below **must** be run on the VM itself and not on your developer's machine.
-
-```bash
-export SEID_REF=v5.5.6-fh3.0 \
-&& sudo -u sei git -C /data/build/seid/ fetch origin \
-&& sudo -u sei git -C /data/build/seid/ checkout "${SEID_REF:?}" \
-&& sudo -u sei bash -c 'source /etc/profile.d/02-golang.sh && cd /data/build/seid && make install' \
-&& sudo cp /home/sei/go/bin/seid /usr/local/bin/seid-"${SEID_REF:?}"
-```
-
-Then from your developer machine now, run the following commands which download from the VM the binary locally and then build a Docker image from it.
-
-Adjust the `TAG` export to use a repository you control, the `SEID_REF` to fit with the correct version.
-
-```
-# Assumed to be in `sei-chain` root folder, replace `sei0` in scp command to fit your own machine's name
-
-export SEID_REF=v5.5.6-fh3.0 \
-&& export FIREETH=v2.6.2 \
-&& export TAG="ghcr.io/streamingfast/firehose-ethereum:${FIREETH:?}-sei-${SEID_REF:?}" \
-&& scp sei0:/usr/local/bin/seid-${SEID_REF:?} . \
-&& docker build --platform=linux/amd64 --build-arg="FIREETH=${FIREETH:?}" --build-arg="SEID_BIN=seid-${SEID_REF:?}" -t "${TAG:?}" -f Dockerfile.sf . \
-&& docker run --platform=linux/amd64 --rm -it "${TAG:?}" seid version \
-&& docker push "${TAG:?}"
-```
+Binary is built automatically on GitHub actions when pushing a tag, images will be found `ghcr.io/streamingfast/sei-chain:<version>`
