@@ -1,3 +1,61 @@
+# docker build . -t sei-protocol/sei:latest
+# docker run --rm -it sei-protocol/sei:latest /bin/sh
+FROM golang:1.21.4-alpine AS go-builder
+
+# this comes from standard alpine nightly file
+#  https://github.com/rust-lang/docker-rust-nightly/blob/master/alpine3.12/Dockerfile
+# with some changes to support our toolchain, etc
+SHELL ["/bin/sh", "-ecuxo", "pipefail"]
+# we probably want to default to latest and error
+# since this is predominantly for dev use
+# hadolint ignore=DL3018
+RUN apk add --no-cache ca-certificates build-base git
+# NOTE: add these to run with LEDGER_ENABLED=true
+# RUN apk add libusb-dev linux-headers
+
+WORKDIR /code
+
+# Download dependencies and CosmWasm libwasmvm if found.
+ADD go.mod go.sum ./
+RUN set -eux; \
+    export ARCH=$(uname -m); \
+    # Currently github.com/CosmWasm/wasmvm is being overriden by github.com/sei-protocol/sei-wasmvm
+    # (see go.mod). However the rust precompiles are still fetched from the upstream repository.
+    # Here we assume that the sei-wasm release version is prefixed with the wasmvm release version
+    # with the matching precompiles. Therefore, to compute the download url, we just strip the suffix
+    # of the sei-wasm release version.
+    WASM_VERSION=$(go list -f {{.Replace.Version}} -m github.com/CosmWasm/wasmvm | sed s/-.*//); \
+    if [ ! -z "${WASM_VERSION}" ]; then \
+    wget -O /lib/libwasmvm_muslc.a https://github.com/CosmWasm/wasmvm/releases/download/${WASM_VERSION}/libwasmvm_muslc.${ARCH}.a; \
+    fi; \
+    wget -O /lib/libwasmvm152_muslc.a https://github.com/sei-protocol/sei-wasmd/releases/download/v0.3.0-hotfix-4/libwasmvm152_muslc.${ARCH}.a; \
+    go mod download;
+
+# Copy over code
+COPY . /code/
+
+# force it to use static lib (from above) not standard libgo_cosmwasm.so file
+# then log output of file /code/build/seid
+# then ensure static linking
+RUN LEDGER_ENABLED=false BUILD_TAGS=muslc LINK_STATICALLY=true make build -B \
+    && file /code/build/seid \
+    && echo "Ensuring binary is statically linked ..." \
+    && (file /code/build/seid | grep "statically linked")
+
+# --------------------------------------------------------
+FROM alpine:3.18 as seid
+
+COPY --from=go-builder /code/build/seid /usr/bin/seid
+
+# rest server, tendermint p2p, tendermint rpc
+EXPOSE 1317 26656 26657
+
+CMD ["/usr/bin/seid", "version"]
+
+# --------------------------------------------------------
+# Firehose Additions
+# --------------------------------------------------------
+
 FROM ubuntu:24.04 AS base
 
 WORKDIR /app
@@ -20,32 +78,6 @@ RUN curl -LO https://github.com/streamingfast/firehose-ethereum/releases/downloa
     && tar -xzf firehose-ethereum_linux_x86_64.tar.gz \
     && rm firehose-ethereum_linux_x86_64.tar.gz
 
-FROM golang:1.22-alpine AS libwasmvm_download
-
-COPY ./go.mod /work/go.mod
-COPY ./go.sum /work/go.sum
-
-# FIXME: Handle multi-arch build, for now we have hard-coded the x86_64 part, but we should be able to build for arm64 as well
-RUN apk add --no-cache wget && cd /work; \
-    export ARCH=$(uname -m); \
-    # Currently github.com/CosmWasm/wasmvm is being overriden by github.com/sei-protocol/sei-wasmvm
-    # (see go.mod). However the rust precompiles are still fetched from the upstream repository.
-    # Here we assume that the sei-wasm release version is prefixed with the wasmvm release version
-    # with the matching precompiles. Therefore, to compute the download url, we just strip the suffix
-    # of the sei-wasm release version.
-    export WASM_VERSION=$(go list -f {{.Replace.Version}} -m github.com/CosmWasm/wasmvm | sed s/-.*//); \
-    wget -O "/lib/libwasmvm.x86_64.${WASM_VERSION}.so" https://github.com/CosmWasm/wasmvm/releases/download/${WASM_VERSION}/libwasmvm.x86_64.so && \
-    printf "${WASM_VERSION}" > /lib/libwasmvm.x86_64.so.version
-
-FROM base AS cosmovisor_download
-
-ARG COSMOVISOR="v1.5.0"
-
-# Download and extract the binary file
-RUN curl -LO https://github.com/cosmos/cosmos-sdk/releases/download/cosmovisor%2F${COSMOVISOR}/cosmovisor-${COSMOVISOR}-linux-amd64.tar.gz \
-    && tar -xzf cosmovisor-${COSMOVISOR}-linux-amd64.tar.gz \
-    && rm cosmovisor-${COSMOVISOR}-linux-amd64.tar.gz
-
 FROM base AS base_with_gcloud
 
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
@@ -55,14 +87,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
 
 FROM base_with_gcloud
 
-ARG SEID_BIN="seid"
-
 COPY --from=fireeth_download /app/fireeth /app/fireeth
-COPY --from=libwasmvm_download /lib/libwasmvm.x86_64.*.so /lib/
-COPY --from=libwasmvm_download /lib/libwasmvm.x86_64.so.version /lib/
+COPY --from=seid /usr/bin/seid /app/seid
 
-COPY ./${SEID_BIN} /app/seid
-
-RUN chmod +x /app/fireeth && \
-    export WASM_VERSION=$(cat /lib/libwasmvm.x86_64.so.version) && \
-    ln -s /lib/libwasmvm.x86_64.${WASM_VERSION}.so /lib/libwasmvm.x86_64.so
+RUN chmod +x /app/fireeth
