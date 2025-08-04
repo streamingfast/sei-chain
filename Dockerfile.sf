@@ -17,7 +17,9 @@ WORKDIR /code
 
 # Download dependencies and CosmWasm libwasmvm if found.
 ADD go.mod go.sum ./
-RUN set -eux; \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eux; \
     export ARCH=$(uname -m); \
     # Currently github.com/CosmWasm/wasmvm is being overriden by github.com/sei-protocol/sei-wasmvm
     # (see go.mod). However the rust precompiles are still fetched from the upstream repository.
@@ -38,7 +40,9 @@ COPY . /code/
 # force it to use static lib (from above) not standard libgo_cosmwasm.so file
 # then log output of file /code/build/seid
 # then ensure static linking
-RUN LEDGER_ENABLED=false BUILD_TAGS=muslc LINK_STATICALLY=true make build -B \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    LEDGER_ENABLED=false BUILD_TAGS=muslc LINK_STATICALLY=true make build -B \
     && file /code/build/seid \
     && echo "Ensuring binary is statically linked ..." \
     && (file /code/build/seid | grep "statically linked")
