@@ -21,31 +21,6 @@ jobs:
       - name: Check out the repo
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 1.22
-
-      - name: Display the version of go that we have installed
-        run: go version
-
-      - name: Restore cached Go build & dependencies
-        id: cache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
-      - name: Compile the binary
-        run: |
-          make install
-
-          cp "`go env GOPATH`/bin/seid" ./
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -79,16 +54,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Always Save Go build & dependencies
-        id: cache-save
-        if: always() && steps.cache-restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
