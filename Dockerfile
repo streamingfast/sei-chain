@@ -1,6 +1,6 @@
 # docker build . -t sei-protocol/sei:latest
 # docker run --rm -it sei-protocol/sei:latest /bin/sh
-FROM golang:1.23.0-alpine AS go-builder
+FROM docker.io/golang:1.24.5 AS go-builder
 
 # this comes from standard alpine nightly file
 #  https://github.com/rust-lang/docker-rust-nightly/blob/master/alpine3.12/Dockerfile
@@ -18,19 +18,19 @@ WORKDIR /code
 # Download dependencies and CosmWasm libwasmvm if found.
 ADD go.mod go.sum ./
 RUN set -eux; \
-    export ARCH=$(uname -m); \
-    # Currently github.com/CosmWasm/wasmvm is being overriden by github.com/sei-protocol/sei-wasmvm
-    # (see go.mod). However the rust precompiles are still fetched from the upstream repository.
-    # Here we assume that the sei-wasm release version is prefixed with the wasmvm release version
-    # with the matching precompiles. Therefore, to compute the download url, we just strip the suffix
-    # of the sei-wasm release version.
-    WASM_VERSION=$(go list -f {{.Replace.Version}} -m github.com/CosmWasm/wasmvm | sed s/-.*//); \
-    if [ ! -z "${WASM_VERSION}" ]; then \
-      wget -O /lib/libwasmvm_muslc.a https://github.com/CosmWasm/wasmvm/releases/download/${WASM_VERSION}/libwasmvm_muslc.${ARCH}.a; \
-    fi; \
-    wget -O /lib/libwasmvm152_muslc.a https://github.com/sei-protocol/sei-wasmd/releases/download/v0.3.6/libwasmvm152_muslc.${ARCH}.a; \
-    wget -O /lib/libwasmvm155_muslc.a https://github.com/sei-protocol/sei-wasmd/releases/download/v0.3.6/libwasmvm155_muslc.${ARCH}.a; \
-    go mod download;
+  export ARCH=$(uname -m); \
+  # Currently github.com/CosmWasm/wasmvm is being overriden by github.com/sei-protocol/sei-wasmvm
+  # (see go.mod). However the rust precompiles are still fetched from the upstream repository.
+  # Here we assume that the sei-wasm release version is prefixed with the wasmvm release version
+  # with the matching precompiles. Therefore, to compute the download url, we just strip the suffix
+  # of the sei-wasm release version.
+  WASM_VERSION=$(go list -f {{.Replace.Version}} -m github.com/CosmWasm/wasmvm | sed s/-.*//); \
+  if [ ! -z "${WASM_VERSION}" ]; then \
+  wget -O /lib/libwasmvm_muslc.a https://github.com/CosmWasm/wasmvm/releases/download/${WASM_VERSION}/libwasmvm_muslc.${ARCH}.a; \
+  fi; \
+  wget -O /lib/libwasmvm152_muslc.a https://github.com/sei-protocol/sei-wasmd/releases/download/v0.3.6/libwasmvm152_muslc.${ARCH}.a; \
+  wget -O /lib/libwasmvm155_muslc.a https://github.com/sei-protocol/sei-wasmd/releases/download/v0.3.6/libwasmvm155_muslc.${ARCH}.a; \
+  go mod download;
 
 # Copy over code
 COPY . /code/

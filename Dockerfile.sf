@@ -1,6 +1,6 @@
 # docker build . -t sei-protocol/sei:latest
 # docker run --rm -it sei-protocol/sei:latest /bin/sh
-FROM golang:1.21.4-alpine AS go-builder
+FROM docker.io/golang:1.24.5 AS go-builder
 
 # this comes from standard alpine nightly file
 #  https://github.com/rust-lang/docker-rust-nightly/blob/master/alpine3.12/Dockerfile
@@ -42,7 +42,7 @@ COPY . /code/
 # then ensure static linking
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    LEDGER_ENABLED=false BUILD_TAGS=muslc LINK_STATICALLY=true make build -B \
+    LEDGER_ENABLED=false BUILD_TAGS=muslc LINK_STATICALLY=true make build-verbose -B \
     && file /code/build/seid \
     && echo "Ensuring binary is statically linked ..." \
     && (file /code/build/seid | grep "statically linked")
@@ -68,25 +68,8 @@ RUN curl -LO https://github.com/chmln/sd/releases/download/v1.0.0/sd-v1.0.0-x86_
 
 ENV PATH="/app:${PATH}"
 
-FROM base AS fireeth_download
+FROM ghcr.io/streamingfast/firehose-ethereum:latest
 
-ARG FIREETH="v2.11.1"
-
-# Download and extract the binary file
-RUN curl -LO https://github.com/streamingfast/firehose-ethereum/releases/download/${FIREETH}/firehose-ethereum_linux_x86_64.tar.gz \
-    && tar -xzf firehose-ethereum_linux_x86_64.tar.gz \
-    && rm firehose-ethereum_linux_x86_64.tar.gz
-
-FROM base AS base_with_gcloud
-
-RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
-    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
-    && apt-get update -y \
-    && apt-get install google-cloud-sdk -y
-
-FROM base_with_gcloud
-
-COPY --from=fireeth_download /app/fireeth /app/fireeth
 COPY --from=go-builder /code/build/seid /app/seid
 
-RUN chmod +x /app/fireeth
+RUN chmod +x /app/seid
