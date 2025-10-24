@@ -1,3 +1,7 @@
+## v6.2.0-fh3.0-2
+
+* Re-release of v6.2.0-fh3.0 to fix `SetCode` transaction handling.
+
 ## v6.2.0-fh3.0-1
 
 * Re-release of v6.2.0-fh3.0 to fix release process.
