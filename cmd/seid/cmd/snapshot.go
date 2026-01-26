@@ -12,7 +12,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/snapshots"
 	storetypes "github.com/cosmos/cosmos-sdk/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	aclkeeper "github.com/cosmos/cosmos-sdk/x/accesscontrol/keeper"
 	"github.com/spf13/cast"
 	"github.com/spf13/cobra"
 	"github.com/tendermint/tendermint/libs/log"
@@ -82,7 +81,6 @@ func SnapshotCmd() *cobra.Command {
 				app.GetWasmEnabledProposals(),
 				appOpts,
 				[]wasm.Option{},
-				[]aclkeeper.Option{},
 				app.EmptyAppOptions,
 				baseapp.SetSnapshotStore(snapshotStore),
 				baseapp.SetPruning(storetypes.NewPruningOptionsFromString(storetypes.PruningOptionNothing)),
@@ -96,7 +94,7 @@ func SnapshotCmd() *cobra.Command {
 			fmt.Printf("Creating snapshot at height %d...\n", height)
 
 			// Create snapshot directory if it doesn't exist
-			if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+			if err := os.MkdirAll(snapshotDir, 0750); err != nil {
 				return fmt.Errorf("failed to create snapshot directory: %w", err)
 			}
 

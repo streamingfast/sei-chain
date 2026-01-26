@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	wasmtypes "github.com/CosmWasm/wasmd/x/wasm/types"
@@ -25,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/sei-protocol/sei-chain/evmrpc/rpcutils"
+	"github.com/sei-protocol/sei-chain/evmrpc/stats"
 	"github.com/sei-protocol/sei-chain/utils/metrics"
 	"github.com/sei-protocol/sei-chain/x/evm/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
@@ -35,13 +37,18 @@ import (
 
 const LatestCtxHeight int64 = -1
 
-func GetBlockNumberByNrOrHash(ctx context.Context, tmClient rpcclient.Client, blockNrOrHash rpc.BlockNumberOrHash) (*int64, error) {
+// EVM launch block heights for different chains
+const Pacific1EVMLaunchHeight int64 = 79123881
+
+// GetBlockNumberByNrOrHash returns the height of the block with the given number or hash.
+func GetBlockNumberByNrOrHash(ctx context.Context, tmClient rpcclient.Client, wm *WatermarkManager, blockNrOrHash rpc.BlockNumberOrHash) (*int64, error) {
 	if blockNrOrHash.BlockHash != nil {
-		res, err := blockByHash(ctx, tmClient, blockNrOrHash.BlockHash[:])
+		block, err := blockByHashRespectingWatermarks(ctx, tmClient, wm, blockNrOrHash.BlockHash[:], 1)
 		if err != nil {
 			return nil, err
 		}
-		return &res.Block.Height, nil
+		height := block.Block.Height
+		return &height, nil
 	}
 	return getBlockNumber(ctx, tmClient, *blockNrOrHash.BlockNumber)
 }
@@ -184,6 +191,18 @@ func blockByHashWithRetry(ctx context.Context, client rpcclient.Client, hash byt
 	return blockRes, err
 }
 
+// ValidateEVMBlockHeight checks if the requested block height is valid for EVM queries
+func ValidateEVMBlockHeight(chainID string, blockHeight int64) error {
+	// Only validate for pacific-1 chain
+	if chainID != "pacific-1" {
+		return nil
+	}
+	if blockHeight < Pacific1EVMLaunchHeight {
+		return fmt.Errorf("EVM is only supported from block %d onwards", Pacific1EVMLaunchHeight)
+	}
+	return nil
+}
+
 type indexedMsg struct {
 	msg   sdk.Msg
 	index int
@@ -193,13 +212,12 @@ func filterTransactions(
 	k *keeper.Keeper,
 	ctxProvider func(int64) sdk.Context,
 	txConfigProvider func(int64) client.TxConfig,
-	earliestVersion func() int64,
 	block *coretypes.ResultBlock,
 	includeSyntheticTxs bool,
 	includeBankTransfers bool,
 	cacheCreationMutex *sync.Mutex,
 	globalBlockCache BlockCache,
-) ([]indexedMsg, error) {
+) []indexedMsg {
 	txs := []indexedMsg{}
 	txCounts := make(map[string]uint64)
 	startOfBlockNonce := make(map[string]uint64)
@@ -207,9 +225,6 @@ func filterTransactions(
 	latestCtx := ctxProvider(LatestCtxHeight)
 	ctx := ctxProvider(block.Block.Height)
 	prevCtx := ctxProvider(block.Block.Height - 1)
-	if earliestVersion() > prevCtx.BlockHeight() {
-		return nil, fmt.Errorf("block pruned: %d vs %d", earliestVersion(), prevCtx.BlockHeight())
-	}
 	for i, tx := range block.Block.Txs {
 		sdkTx, err := txConfig.TxDecoder()(tx)
 		if err != nil {
@@ -261,7 +276,7 @@ func filterTransactions(
 			}
 		}
 	}
-	return txs, nil
+	return txs
 }
 
 func recordMetrics(apiMethod string, connectionType ConnectionType, startTime time.Time) {
@@ -280,6 +295,7 @@ func recordMetricsWithError(apiMethod string, connectionType ConnectionType, sta
 
 	metrics.IncrementRpcRequestCounter(apiMethod, string(connectionType), success)
 	metrics.MeasureRpcRequestLatency(apiMethod, string(connectionType), startTime)
+	stats.RecordAPIInvocation(apiMethod, string(connectionType), startTime, success)
 
 	if panicValue != nil {
 		panic(panicValue)
@@ -319,28 +335,23 @@ type typedTxHash struct {
 func getTxHashesFromBlock(
 	ctxProvider func(int64) sdk.Context,
 	txConfigProvider func(int64) client.TxConfig,
-	earliestVersion func() int64,
 	k *keeper.Keeper,
 	block *coretypes.ResultBlock,
 	shouldIncludeSynthetic bool,
 	cacheCreationMutex *sync.Mutex,
 	globalBlockCache BlockCache,
-) ([]typedTxHash, error) {
+) []typedTxHash {
 	txHashes := []typedTxHash{}
-	txs, err := filterTransactions(k, ctxProvider, txConfigProvider, earliestVersion, block, shouldIncludeSynthetic, false, cacheCreationMutex, globalBlockCache)
-	if err != nil {
-		return nil, err
-	}
-	for _, tx := range txs {
+	for _, tx := range filterTransactions(k, ctxProvider, txConfigProvider, block, shouldIncludeSynthetic, false, cacheCreationMutex, globalBlockCache) {
 		switch tx.msg.(type) {
 		case *types.MsgEVMTransaction:
 			ethtx, _ := tx.msg.(*types.MsgEVMTransaction).AsTransaction()
 			txHashes = append(txHashes, typedTxHash{hash: ethtx.Hash(), isEvm: true})
 		case *wasmtypes.MsgExecuteContract:
-			txHashes = append(txHashes, typedTxHash{hash: sha256.Sum256(block.Block.Txs[tx.index]), isEvm: false})
+			txHashes = append(txHashes, typedTxHash{hash: common.Hash(sha256.Sum256(block.Block.Txs[tx.index])), isEvm: false})
 		}
 	}
-	return txHashes, nil
+	return txHashes
 }
 
 func isReceiptFromAnteError(ctx sdk.Context, receipt *types.Receipt) bool {
@@ -357,6 +368,12 @@ type ParallelRunner struct {
 	Queue chan func()
 }
 
+var panicHook atomic.Value
+
+func SetPanicHook(h func(interface{})) {
+	panicHook.Store(h)
+}
+
 func NewParallelRunner(cnt int, capacity int) *ParallelRunner {
 	pr := &ParallelRunner{
 		Done:  sync.WaitGroup{},
@@ -368,16 +385,26 @@ func NewParallelRunner(cnt int, capacity int) *ParallelRunner {
 			defer pr.Done.Done()
 			defer recoverAndLog()
 			for f := range pr.Queue {
-				f()
+				runWithRecovery(f)
 			}
 		}()
 	}
 	return pr
 }
 
+func runWithRecovery(f func()) {
+	defer recoverAndLog()
+	f()
+}
+
 func recoverAndLog() {
 	if e := recover(); e != nil {
 		fmt.Printf("Panic recovered: %s\n", e)
 		debug.PrintStack()
+		if v := panicHook.Load(); v != nil {
+			if hook, ok := v.(func(interface{})); ok && hook != nil {
+				hook(e)
+			}
+		}
 	}
 }

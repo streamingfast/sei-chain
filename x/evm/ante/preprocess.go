@@ -1,21 +1,19 @@
 package ante
 
 import (
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/sei-protocol/sei-chain/utils/helpers"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	sdkacltypes "github.com/cosmos/cosmos-sdk/types/accesscontrol"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 	accountkeeper "github.com/cosmos/cosmos-sdk/x/auth/keeper"
 	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
-	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
-	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -58,7 +56,7 @@ func NewEVMPreprocessDecorator(evmKeeper *evmkeeper.Keeper, accountKeeper *accou
 //nolint:revive
 func (p *EVMPreprocessDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simulate bool, next sdk.AnteHandler) (sdk.Context, error) {
 	msg := evmtypes.MustGetEVMTransactionMessage(tx)
-	if err := Preprocess(ctx, msg, p.evmKeeper.ChainID(ctx)); err != nil {
+	if err := Preprocess(ctx, msg, p.evmKeeper.ChainID(ctx), p.evmKeeper.EthBlockTestConfig.Enabled); err != nil {
 		return ctx, err
 	}
 
@@ -118,7 +116,13 @@ func (p *EVMPreprocessDecorator) IsAccountBalancePositive(ctx sdk.Context, seiAd
 }
 
 // stateless
-func Preprocess(ctx sdk.Context, msgEVMTransaction *evmtypes.MsgEVMTransaction, chainID *big.Int) error {
+func Preprocess(ctx sdk.Context, msgEVMTransaction *evmtypes.MsgEVMTransaction, chainID *big.Int, isBlockTest bool) error {
+	return PreprocessUnpacked(ctx, msgEVMTransaction, chainID, isBlockTest, nil)
+}
+
+// PreprocessUnpacked does the same thing as Preprocess but accepts already unpacked txData to save computation
+// if txData is nil, it will unpack from msgEVMTransaction.Data.
+func PreprocessUnpacked(ctx sdk.Context, msgEVMTransaction *evmtypes.MsgEVMTransaction, chainID *big.Int, isBlockTest bool, txData ethtx.TxData) error {
 	if msgEVMTransaction.Derived != nil {
 		if msgEVMTransaction.Derived.PubKey == nil {
 			// this means the message has `Derived` set from the outside, in which case we should reject
@@ -127,9 +131,14 @@ func Preprocess(ctx sdk.Context, msgEVMTransaction *evmtypes.MsgEVMTransaction, 
 		// already preprocessed
 		return nil
 	}
-	txData, err := evmtypes.UnpackTxData(msgEVMTransaction.Data)
-	if err != nil {
-		return err
+
+	if txData == nil {
+		// TxData not passed in, unpack it.
+		var err error
+		txData, err = evmtypes.UnpackTxData(msgEVMTransaction.Data)
+		if err != nil {
+			return err
+		}
 	}
 
 	if atx, ok := txData.(*ethtx.AssociateTx); ok {
@@ -159,7 +168,7 @@ func Preprocess(ctx sdk.Context, msgEVMTransaction *evmtypes.MsgEVMTransaction, 
 	ethCfg := chainCfg.EthereumConfig(chainID)
 	version := GetVersion(ctx, ethCfg)
 	signer := SignerMap[version](chainID)
-	if !isTxTypeAllowed(version, ethTx.Type()) {
+	if !IsTxTypeAllowed(version, ethTx.Type()) {
 		return ethtypes.ErrInvalidChainId
 	}
 
@@ -169,7 +178,13 @@ func Preprocess(ctx sdk.Context, msgEVMTransaction *evmtypes.MsgEVMTransaction, 
 		V = AdjustV(V, ethTx.Type(), ethCfg.ChainID)
 		txHash = signer.Hash(ethTx)
 	} else {
-		txHash = ethtypes.FrontierSigner{}.Hash(ethTx)
+		if isBlockTest || (ctx.IsTracing() && strings.Compare(ctx.ClosestUpgradeName(), "v6.3.0") < 0) {
+			// need to allow unprotected legacy txs in blocktest
+			// to not lose coverage for other parts of the code
+			txHash = ethtypes.FrontierSigner{}.Hash(ethTx)
+		} else {
+			return errors.New("unsupported tx type: unsafe legacy tx")
+		}
 	}
 	evmAddr, seiAddr, seiPubkey, err := helpers.GetAddresses(V, R, S, txHash)
 	if err != nil {
@@ -185,60 +200,7 @@ func Preprocess(ctx sdk.Context, msgEVMTransaction *evmtypes.MsgEVMTransaction, 
 	return nil
 }
 
-func (p *EVMPreprocessDecorator) AnteDeps(txDeps []sdkacltypes.AccessOperation, tx sdk.Tx, txIndex int, next sdk.AnteDepGenerator) (newTxDeps []sdkacltypes.AccessOperation, err error) {
-	msg := evmtypes.MustGetEVMTransactionMessage(tx)
-	return next(append(txDeps, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_READ,
-		ResourceType:       sdkacltypes.ResourceType_KV_EVM_S2E,
-		IdentifierTemplate: hex.EncodeToString(evmtypes.SeiAddressToEVMAddressKey(msg.Derived.SenderSeiAddr)),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_WRITE,
-		ResourceType:       sdkacltypes.ResourceType_KV_EVM_S2E,
-		IdentifierTemplate: hex.EncodeToString(evmtypes.SeiAddressToEVMAddressKey(msg.Derived.SenderSeiAddr)),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_WRITE,
-		ResourceType:       sdkacltypes.ResourceType_KV_EVM_E2S,
-		IdentifierTemplate: hex.EncodeToString(evmtypes.EVMAddressToSeiAddressKey(msg.Derived.SenderEVMAddr)),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_READ,
-		ResourceType:       sdkacltypes.ResourceType_KV_BANK_BALANCES,
-		IdentifierTemplate: hex.EncodeToString(banktypes.CreateAccountBalancesPrefix(msg.Derived.SenderSeiAddr)),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_WRITE,
-		ResourceType:       sdkacltypes.ResourceType_KV_BANK_BALANCES,
-		IdentifierTemplate: hex.EncodeToString(banktypes.CreateAccountBalancesPrefix(msg.Derived.SenderSeiAddr)),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_READ,
-		ResourceType:       sdkacltypes.ResourceType_KV_BANK_BALANCES,
-		IdentifierTemplate: hex.EncodeToString(banktypes.CreateAccountBalancesPrefix(msg.Derived.SenderEVMAddr[:])),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_WRITE,
-		ResourceType:       sdkacltypes.ResourceType_KV_BANK_BALANCES,
-		IdentifierTemplate: hex.EncodeToString(banktypes.CreateAccountBalancesPrefix(msg.Derived.SenderEVMAddr[:])),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_READ,
-		ResourceType:       sdkacltypes.ResourceType_KV_AUTH_ADDRESS_STORE,
-		IdentifierTemplate: hex.EncodeToString(authtypes.AddressStoreKey(msg.Derived.SenderSeiAddr)),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_WRITE,
-		ResourceType:       sdkacltypes.ResourceType_KV_AUTH_ADDRESS_STORE,
-		IdentifierTemplate: hex.EncodeToString(authtypes.AddressStoreKey(msg.Derived.SenderSeiAddr)),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_READ,
-		ResourceType:       sdkacltypes.ResourceType_KV_AUTH_ADDRESS_STORE,
-		IdentifierTemplate: hex.EncodeToString(authtypes.AddressStoreKey(msg.Derived.SenderEVMAddr[:])),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_WRITE,
-		ResourceType:       sdkacltypes.ResourceType_KV_AUTH_ADDRESS_STORE,
-		IdentifierTemplate: hex.EncodeToString(authtypes.AddressStoreKey(msg.Derived.SenderEVMAddr[:])),
-	}, sdkacltypes.AccessOperation{
-		AccessType:         sdkacltypes.AccessType_READ,
-		ResourceType:       sdkacltypes.ResourceType_KV_EVM_NONCE,
-		IdentifierTemplate: hex.EncodeToString(append(evmtypes.NonceKeyPrefix, msg.Derived.SenderEVMAddr[:]...)),
-	}), tx, txIndex)
-}
-
-func isTxTypeAllowed(version derived.SignerVersion, txType uint8) bool {
+func IsTxTypeAllowed(version derived.SignerVersion, txType uint8) bool {
 	for _, t := range AllowedTxTypes[version] {
 		if t == txType {
 			return true
@@ -260,7 +222,7 @@ func AdjustV(V *big.Int, txType uint8, chainID *big.Int) *big.Int {
 
 func GetVersion(ctx sdk.Context, ethCfg *params.ChainConfig) derived.SignerVersion {
 	blockNum := big.NewInt(ctx.BlockHeight())
-	ts := uint64(ctx.BlockTime().Unix())
+	ts := uint64(ctx.BlockTime().Unix()) // nolint:gosec
 	switch {
 	case ethCfg.IsPrague(blockNum, ts):
 		return derived.Prague

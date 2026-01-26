@@ -93,7 +93,8 @@ type HTTPServer struct {
 }
 
 const (
-	shutdownTimeout = 5 * time.Second
+	shutdownTimeout        = 5 * time.Second
+	metricsPrinterInterval = 5 * time.Second
 )
 
 func NewHTTPServer(log log.Logger, timeouts rpc.HTTPTimeouts) *HTTPServer {
@@ -119,7 +120,7 @@ func (h *HTTPServer) SetListenAddr(host string, port int) error {
 	return nil
 }
 
-// listenAddr returns the listening address of the server.
+// ListenAddr returns the listening address of the server.
 func (h *HTTPServer) ListenAddr() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -130,7 +131,7 @@ func (h *HTTPServer) ListenAddr() string {
 	return h.endpoint
 }
 
-// start starts the HTTP server if it is enabled and not already running.
+// Start starts the HTTP server if it is enabled and not already running.
 func (h *HTTPServer) Start() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -183,6 +184,10 @@ func (h *HTTPServer) Start() error {
 		"cors", strings.Join(h.HTTPConfig.CorsAllowedOrigins, ","),
 		"vhosts", strings.Join(h.HTTPConfig.Vhosts, ","),
 	)
+
+	// Start metrics printer
+	// Prometheus metrics are always exported; stdout printing requires EVM_DEBUG_METRICS=true
+	StartMetricsPrinter(metricsPrinterInterval)
 
 	// Log all handlers mounted on server.
 	paths := make([]string, len(h.handlerNames))
@@ -242,7 +247,7 @@ func CheckPath(r *http.Request, path string) bool {
 	return len(r.URL.Path) >= len(path) && r.URL.Path[:len(path)] == path
 }
 
-// stop shuts down the HTTP server.
+// Stop shuts down the HTTP server.
 func (h *HTTPServer) Stop() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -255,6 +260,9 @@ func (h *HTTPServer) doStop() {
 	if h.listener == nil {
 		return // not running
 	}
+
+	// Stop metrics printer
+	StopMetricsPrinter()
 
 	// Shut down the server.
 	httpHandler := h.httpHandler.Load().(*rpcHandler)
@@ -378,7 +386,7 @@ func (h *HTTPServer) wsAllowed() bool {
 	return h.wsHandler.Load().(*rpcHandler) != nil
 }
 
-// NewHTTPHandlerStack returns wrapped http-related handlers
+// NewHTTPHandlerStack returns wrapped http-related handlers.
 func NewHTTPHandlerStack(srv http.Handler, cors []string, vhosts []string, JwtSecret []byte) http.Handler {
 	// Wrap the CORS-handler within a host-handler
 	handler := newCorsHandler(srv, cors)
@@ -391,10 +399,11 @@ func NewHTTPHandlerStack(srv http.Handler, cors []string, vhosts []string, JwtSe
 
 // NewWSHandlerStack returns a wrapped ws-related handler.
 func NewWSHandlerStack(srv http.Handler, JwtSecret []byte) http.Handler {
+	handler := srv
 	if len(JwtSecret) != 0 {
-		return NewWSConnectionHandler(newJWTHandler(JwtSecret, srv))
+		handler = newJWTHandler(JwtSecret, handler)
 	}
-	return NewWSConnectionHandler(srv)
+	return NewWSConnectionHandler(handler)
 }
 
 func newCorsHandler(srv http.Handler, allowedOrigins []string) http.Handler {
@@ -527,7 +536,7 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	}
 
 	n, err := w.gz.Write(b)
-	w.written += uint64(n)
+	w.written += uint64(n) //nolint:gosec
 	if w.hasLength && w.written >= w.contentLength {
 		// The HTTP handler has finished writing the entire uncompressed response. Close
 		// the gzip stream to ensure the footer will be seen by the client in case the
