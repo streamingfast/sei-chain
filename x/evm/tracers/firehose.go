@@ -1550,26 +1550,36 @@ func (f *Firehose) OnNonceChange(a common.Address, prev, new uint64) {
 }
 
 func (f *Firehose) OnCodeChange(a common.Address, prevCodeHash common.Hash, prev []byte, codeHash common.Hash, code []byte) {
+	firehoseDebug("code changed (address=%s prev_hash=%s new_hash=%s)", a, prevCodeHash, codeHash)
+
 	f.ensureInBlockOrTrx()
 
-	change := &pbeth.CodeChange{
-		Address: a.Bytes(),
+	if f.transaction != nil {
+		activeCall := f.callStack.Peek()
+
+		// Since EIP-7702 and the introduction of the `SetCode` transaction, a traced `StateDB.SetCode(...)` call
+		// is now happening within the "bootstrap" transaction phase which happens before any call is made. So
+		// in the event there is no active call, we push the code change to the deferred state and will be applied
+		// on the root call when it's finally created.
+		if activeCall == nil {
+			f.deferredCallState.codeChanges = append(f.deferredCallState.codeChanges, f.newCodeChange(a, prevCodeHash, prev, codeHash, code))
+			return
+		}
+
+		activeCall.CodeChanges = append(activeCall.CodeChanges, f.newCodeChange(a, prevCodeHash, prev, codeHash, code))
+	} else {
+		f.block.CodeChanges = append(f.block.CodeChanges, f.newCodeChange(a, prevCodeHash, prev, codeHash, code))
+	}
+}
+
+func (f *Firehose) newCodeChange(addr common.Address, prevCodeHash common.Hash, prev []byte, codeHash common.Hash, code []byte) *pbeth.CodeChange {
+	return &pbeth.CodeChange{
+		Address: addr.Bytes(),
 		OldHash: prevCodeHash.Bytes(),
 		OldCode: prev,
 		NewHash: codeHash.Bytes(),
 		NewCode: code,
 		Ordinal: f.blockOrdinal.Next(),
-	}
-
-	if f.transaction != nil {
-		activeCall := f.callStack.Peek()
-		if activeCall == nil {
-			f.panicInvalidState("caller expected to be in call state but we were not, this is a bug", 0)
-		}
-
-		activeCall.CodeChanges = append(activeCall.CodeChanges, change)
-	} else {
-		f.block.CodeChanges = append(f.block.CodeChanges, change)
 	}
 }
 
@@ -1897,6 +1907,11 @@ func newBlockHeaderFromChainHeader(h *types.Header) *pbeth.BlockHeader {
 		parentBeaconRootBytes = root.Bytes()
 	}
 
+	var requestsHashBytes []byte
+	if hash := h.RequestsHash; hash != nil {
+		requestsHashBytes = hash.Bytes()
+	}
+
 	pbHead := &pbeth.BlockHeader{
 		Hash:             h.Hash().Bytes(),
 		Number:           h.Number.Uint64(),
@@ -1919,6 +1934,7 @@ func newBlockHeaderFromChainHeader(h *types.Header) *pbeth.BlockHeader {
 		BlobGasUsed:      h.BlobGasUsed,
 		ExcessBlobGas:    h.ExcessBlobGas,
 		ParentBeaconRoot: parentBeaconRootBytes,
+		RequestsHash:     requestsHashBytes,
 
 		// Only set on Polygon fork(s)
 		TxDependency: nil,
@@ -2353,6 +2369,7 @@ type DeferredCallState struct {
 	balanceChanges   []*pbeth.BalanceChange
 	gasChanges       []*pbeth.GasChange
 	nonceChanges     []*pbeth.NonceChange
+	codeChanges      []*pbeth.CodeChange
 }
 
 func NewDeferredCallState() *DeferredCallState {
@@ -2373,6 +2390,7 @@ func (d *DeferredCallState) MaybePopulateCallAndReset(source string, call *pbeth
 	call.BalanceChanges = append(call.BalanceChanges, d.balanceChanges...)
 	call.GasChanges = append(call.GasChanges, d.gasChanges...)
 	call.NonceChanges = append(call.NonceChanges, d.nonceChanges...)
+	call.CodeChanges = append(call.CodeChanges, d.codeChanges...)
 
 	d.Reset()
 
@@ -2380,7 +2398,7 @@ func (d *DeferredCallState) MaybePopulateCallAndReset(source string, call *pbeth
 }
 
 func (d *DeferredCallState) IsEmpty() bool {
-	return len(d.accountCreations) == 0 && len(d.balanceChanges) == 0 && len(d.gasChanges) == 0 && len(d.nonceChanges) == 0
+	return len(d.accountCreations) == 0 && len(d.balanceChanges) == 0 && len(d.gasChanges) == 0 && len(d.nonceChanges) == 0 && len(d.codeChanges) == 0
 }
 
 func (d *DeferredCallState) Reset() {
@@ -2388,6 +2406,7 @@ func (d *DeferredCallState) Reset() {
 	d.balanceChanges = nil
 	d.gasChanges = nil
 	d.nonceChanges = nil
+	d.codeChanges = nil
 }
 
 type boolPtrView bool

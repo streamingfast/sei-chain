@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/export"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
+	"github.com/sei-protocol/sei-chain/app/legacyabci"
 	"github.com/sei-protocol/sei-chain/precompiles/wasmd"
 	"github.com/sei-protocol/sei-chain/x/evm/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
@@ -42,9 +43,9 @@ type SendConfig struct {
 func NewSendAPI(
 	tmClient rpcclient.Client,
 	txConfigProvider func(int64) client.TxConfig,
-	earliestVersion func() int64,
 	sendConfig *SendConfig,
 	k *keeper.Keeper,
+	beginBlockKeepers legacyabci.BeginBlockKeepers,
 	ctxProvider func(int64) sdk.Context,
 	homeDir string,
 	simulateConfig *SimulateConfig,
@@ -53,6 +54,7 @@ func NewSendAPI(
 	connectionType ConnectionType,
 	globalBlockCache BlockCache,
 	cacheCreationMutex *sync.Mutex,
+	watermarks *WatermarkManager,
 ) *SendAPI {
 	return &SendAPI{
 		tmClient:         tmClient,
@@ -61,14 +63,14 @@ func NewSendAPI(
 		keeper:           k,
 		ctxProvider:      ctxProvider,
 		homeDir:          homeDir,
-		backend:          NewBackend(ctxProvider, k, txConfigProvider, earliestVersion, tmClient, simulateConfig, app, antehandler, globalBlockCache, cacheCreationMutex),
+		backend:          NewBackend(ctxProvider, k, beginBlockKeepers, txConfigProvider, tmClient, simulateConfig, app, antehandler, globalBlockCache, cacheCreationMutex, watermarks),
 		connectionType:   connectionType,
 	}
 }
 
 func (s *SendAPI) SendRawTransaction(ctx context.Context, input hexutil.Bytes) (hash common.Hash, err error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_sendRawTransaction", s.connectionType, startTime)
+	defer recordMetricsWithError("eth_sendRawTransaction", s.connectionType, startTime, err)
 	tx := new(ethtypes.Transaction)
 	if err = tx.UnmarshalBinary(input); err != nil {
 		return
@@ -181,7 +183,7 @@ func (s *SendAPI) simulateTx(ctx context.Context, tx *ethtypes.Transaction) (est
 
 func (s *SendAPI) SignTransaction(_ context.Context, args apitypes.SendTxArgs, _ *string) (result *export.SignTransactionResult, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_signTransaction", s.connectionType, startTime)
+	defer recordMetricsWithError("eth_signTransaction", s.connectionType, startTime, returnErr)
 	unsignedTx, err := args.ToTransaction()
 	if err != nil {
 		return nil, err
@@ -199,7 +201,7 @@ func (s *SendAPI) SignTransaction(_ context.Context, args apitypes.SendTxArgs, _
 
 func (s *SendAPI) SendTransaction(ctx context.Context, args export.TransactionArgs) (result common.Hash, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_sendTransaction", s.connectionType, startTime)
+	defer recordMetricsWithError("eth_sendTransaction", s.connectionType, startTime, returnErr)
 	if err := args.SetDefaults(ctx, s.backend, false); err != nil {
 		return common.Hash{}, err
 	}

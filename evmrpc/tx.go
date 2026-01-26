@@ -39,10 +39,10 @@ type TransactionAPI struct {
 	keeper             *keeper.Keeper
 	ctxProvider        func(int64) sdk.Context
 	txConfigProvider   func(int64) client.TxConfig
-	earliestVersion    func() int64
 	homeDir            string
 	connectionType     ConnectionType
 	includeSynthetic   bool
+	watermarks         *WatermarkManager
 	globalBlockCache   BlockCache
 	cacheCreationMutex *sync.Mutex
 }
@@ -57,9 +57,9 @@ func NewTransactionAPI(
 	k *keeper.Keeper,
 	ctxProvider func(int64) sdk.Context,
 	txConfigProvider func(int64) client.TxConfig,
-	earliestVersion func() int64,
 	homeDir string,
 	connectionType ConnectionType,
+	watermarks *WatermarkManager,
 	globalBlockCache BlockCache,
 	cacheCreationMutex *sync.Mutex,
 ) *TransactionAPI {
@@ -68,9 +68,9 @@ func NewTransactionAPI(
 		keeper:             k,
 		ctxProvider:        ctxProvider,
 		txConfigProvider:   txConfigProvider,
-		earliestVersion:    earliestVersion,
 		homeDir:            homeDir,
 		connectionType:     connectionType,
+		watermarks:         watermarks,
 		globalBlockCache:   globalBlockCache,
 		cacheCreationMutex: cacheCreationMutex,
 	}
@@ -81,14 +81,14 @@ func NewSeiTransactionAPI(
 	k *keeper.Keeper,
 	ctxProvider func(int64) sdk.Context,
 	txConfigProvider func(int64) client.TxConfig,
-	earliestVersion func() int64,
 	homeDir string,
 	connectionType ConnectionType,
 	isPanicTx func(ctx context.Context, hash common.Hash) (bool, error),
+	watermarks *WatermarkManager,
 	globalBlockCache BlockCache,
 	cacheCreationMutex *sync.Mutex,
 ) *SeiTransactionAPI {
-	baseAPI := NewTransactionAPI(tmClient, k, ctxProvider, txConfigProvider, earliestVersion, homeDir, connectionType, globalBlockCache, cacheCreationMutex)
+	baseAPI := NewTransactionAPI(tmClient, k, ctxProvider, txConfigProvider, homeDir, connectionType, watermarks, globalBlockCache, cacheCreationMutex)
 	baseAPI.includeSynthetic = true
 	return &SeiTransactionAPI{TransactionAPI: baseAPI, isPanicTx: isPanicTx}
 }
@@ -110,7 +110,7 @@ func getTransactionReceipt(
 	includeSynthetic bool,
 ) (result map[string]interface{}, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_getTransactionReceipt", t.connectionType, startTime)
+	defer recordMetricsWithError("eth_getTransactionReceipt", t.connectionType, startTime, returnErr)
 	sdkctx := t.ctxProvider(LatestCtxHeight)
 
 	if excludePanicTxs {
@@ -136,8 +136,8 @@ func getTransactionReceipt(
 	// This case is for when a tx fails before it makes it to the VM
 	if receipt.Status == 0 && receipt.GasUsed == 0 {
 		// Get the block
-		height := int64(receipt.BlockNumber)
-		block, err := blockByNumberWithRetry(ctx, t.tmClient, &height, 1)
+		height := int64(receipt.BlockNumber) //nolint:gosec
+		block, err := blockByNumberRespectingWatermarks(ctx, t.tmClient, t.watermarks, &height, 1)
 		if err != nil {
 			return nil, err
 		}
@@ -167,17 +167,17 @@ func getTransactionReceipt(
 			}
 		}
 	}
-	height := int64(receipt.BlockNumber)
-	block, err := blockByNumberWithRetry(ctx, t.tmClient, &height, 1)
+	height := int64(receipt.BlockNumber) //nolint:gosec
+	block, err := blockByNumberRespectingWatermarks(ctx, t.tmClient, t.watermarks, &height, 1)
 	if err != nil {
 		return nil, err
 	}
-	return encodeReceipt(t.ctxProvider, t.txConfigProvider, t.earliestVersion, receipt, t.keeper, block, includeSynthetic, t.globalBlockCache, t.cacheCreationMutex)
+	return encodeReceipt(t.ctxProvider, t.txConfigProvider, receipt, t.keeper, block, includeSynthetic, t.globalBlockCache, t.cacheCreationMutex)
 }
 
 func (t *TransactionAPI) GetVMError(hash common.Hash) (result string, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_getVMError", t.connectionType, startTime)
+	defer recordMetricsWithError("eth_getVMError", t.connectionType, startTime, returnErr)
 	receipt, err := t.keeper.GetReceipt(t.ctxProvider(LatestCtxHeight), hash)
 	if err != nil {
 		return "", err
@@ -202,7 +202,7 @@ func (t *TransactionAPI) getTransactionByBlockNumberAndIndex(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	block, err := blockByNumberWithRetry(ctx, t.tmClient, blockNumber, 1)
+	block, err := blockByNumberRespectingWatermarks(ctx, t.tmClient, t.watermarks, blockNumber, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -211,8 +211,8 @@ func (t *TransactionAPI) getTransactionByBlockNumberAndIndex(ctx context.Context
 
 func (t *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, blockHash common.Hash, txIndex hexutil.Uint) (result *export.RPCTransaction, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_getTransactionByBlockHashAndIndex", t.connectionType, startTime)
-	block, err := blockByHash(ctx, t.tmClient, blockHash[:])
+	defer recordMetricsWithError("eth_getTransactionByBlockHashAndIndex", t.connectionType, startTime, returnErr)
+	block, err := blockByHashRespectingWatermarks(ctx, t.tmClient, t.watermarks, blockHash[:], 1)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +226,7 @@ func (t *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, 
 
 func (t *TransactionAPI) GetTransactionByHash(ctx context.Context, hash common.Hash) (result *export.RPCTransaction, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_getTransactionByHash", t.connectionType, startTime)
+	defer recordMetricsWithError("eth_getTransactionByHash", t.connectionType, startTime, returnErr)
 	sdkCtx := t.ctxProvider(LatestCtxHeight)
 	// first try get from mempool
 	for page := 1; page <= UnconfirmedTxQueryMaxPage; page++ {
@@ -271,14 +271,11 @@ func (t *TransactionAPI) GetTransactionByHash(ctx context.Context, hash common.H
 		return nil, err
 	}
 	blockNumber := int64(receipt.BlockNumber) //nolint:gosec
-	block, err := blockByNumberWithRetry(ctx, t.tmClient, &blockNumber, 1)
+	block, err := blockByNumberRespectingWatermarks(ctx, t.tmClient, t.watermarks, &blockNumber, 1)
 	if err != nil {
 		return nil, err
 	}
-	filteredMsgs, err := t.getFilteredMsgs(block)
-	if err != nil {
-		return nil, err
-	}
+	filteredMsgs := t.getFilteredMsgs(block)
 	txIndex, found, ethtx, _ := GetEvmTxIndex(t.ctxProvider(LatestCtxHeight), block, filteredMsgs, receipt.TransactionIndex, t.keeper)
 	if !found {
 		return nil, nil
@@ -291,7 +288,7 @@ func (t *TransactionAPI) GetTransactionByHash(ctx context.Context, hash common.H
 
 func (t *TransactionAPI) GetTransactionErrorByHash(_ context.Context, hash common.Hash) (result string, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_getTransactionErrorByHash", t.connectionType, startTime)
+	defer recordMetricsWithError("eth_getTransactionErrorByHash", t.connectionType, startTime, returnErr)
 	receipt, err := t.keeper.GetReceipt(t.ctxProvider(LatestCtxHeight), hash)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -304,35 +301,27 @@ func (t *TransactionAPI) GetTransactionErrorByHash(_ context.Context, hash commo
 
 func (t *TransactionAPI) GetTransactionCount(ctx context.Context, address common.Address, blockNrOrHash rpc.BlockNumberOrHash) (result *hexutil.Uint64, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_getTransactionCount", t.connectionType, startTime)
-	sdkCtx := t.ctxProvider(LatestCtxHeight)
+	defer recordMetricsWithError("eth_getTransactionCount", t.connectionType, startTime, returnErr)
 
 	var pending bool
 	if blockNrOrHash.BlockHash == nil && *blockNrOrHash.BlockNumber == rpc.PendingBlockNumber {
 		pending = true
 	}
 
-	blkNr, err := GetBlockNumberByNrOrHash(ctx, t.tmClient, blockNrOrHash)
+	height, err := t.watermarks.ResolveHeight(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
 	}
-
-	if blkNr != nil {
-		sdkCtx = t.ctxProvider(*blkNr)
-		if err := CheckVersion(sdkCtx, t.keeper); err != nil {
-			return nil, err
-		}
+	sdkCtx := t.ctxProvider(height)
+	if err := CheckVersion(sdkCtx, t.keeper); err != nil {
+		return nil, err
 	}
-
 	nonce := t.keeper.CalculateNextNonce(sdkCtx, address, pending)
 	return (*hexutil.Uint64)(&nonce), nil
 }
 
 func (t *TransactionAPI) getTransactionWithBlock(block *coretypes.ResultBlock, txIndex uint32, includeSynthetic bool) (*export.RPCTransaction, error) {
-	msgs, err := filterTransactions(t.keeper, t.ctxProvider, t.txConfigProvider, t.earliestVersion, block, includeSynthetic, false, t.cacheCreationMutex, t.globalBlockCache)
-	if err != nil {
-		return nil, err
-	}
+	msgs := filterTransactions(t.keeper, t.ctxProvider, t.txConfigProvider, block, includeSynthetic, false, t.cacheCreationMutex, t.globalBlockCache)
 	if txIndex >= uint32(len(msgs)) { //nolint:gosec
 		return nil, errors.New("transaction index out of range")
 	}
@@ -360,7 +349,7 @@ func (t *TransactionAPI) encodeRPCTransaction(ethtx *ethtypes.Transaction, block
 	}
 	chainConfig := types.DefaultChainConfig().EthereumConfig(t.keeper.ChainID(t.ctxProvider(height)))
 	blockHash := common.HexToHash(block.BlockID.Hash.String())
-	blockNumber := uint64(block.Block.Height)
+	blockNumber := uint64(block.Block.Height) //nolint:gosec
 	blockTime := block.Block.Time
 	blockUnix := toUint64(blockTime.Unix())
 	res := export.NewRPCTransaction(ethtx, blockHash, blockNumber, blockUnix, uint64(txIndex), baseFeePerGas, chainConfig)
@@ -377,7 +366,7 @@ func replaceFrom(tx *export.RPCTransaction, receipt *types.Receipt) {
 
 func (t *TransactionAPI) Sign(addr common.Address, data hexutil.Bytes) (result hexutil.Bytes, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_sign", t.connectionType, startTime)
+	defer recordMetricsWithError("eth_sign", t.connectionType, startTime, returnErr)
 	kb, err := getTestKeyring(t.homeDir)
 	if err != nil {
 		return nil, err
@@ -392,8 +381,8 @@ func (t *TransactionAPI) Sign(addr common.Address, data hexutil.Bytes) (result h
 	return nil, errors.New("address does not have hosted key")
 }
 
-func (t *TransactionAPI) getFilteredMsgs(block *coretypes.ResultBlock) ([]indexedMsg, error) {
-	return filterTransactions(t.keeper, t.ctxProvider, t.txConfigProvider, t.earliestVersion, block, t.includeSynthetic, false, t.cacheCreationMutex, t.globalBlockCache)
+func (t *TransactionAPI) getFilteredMsgs(block *coretypes.ResultBlock) []indexedMsg {
+	return filterTransactions(t.keeper, t.ctxProvider, t.txConfigProvider, block, t.includeSynthetic, false, t.cacheCreationMutex, t.globalBlockCache)
 }
 
 func getEthTxForTxBz(tx tmtypes.Tx, decoder sdk.TxDecoder) *ethtypes.Transaction {
@@ -448,7 +437,6 @@ func GetEvmTxIndex(ctx sdk.Context, block *coretypes.ResultBlock, msgs []indexed
 func encodeReceipt(
 	ctxProvider func(int64) sdk.Context,
 	txConfigProvider func(int64) client.TxConfig,
-	earliestVersion func() int64,
 	receipt *types.Receipt,
 	k *keeper.Keeper,
 	block *coretypes.ResultBlock,
@@ -459,10 +447,7 @@ func encodeReceipt(
 	blockHash := block.BlockID.Hash
 	bh := common.HexToHash(blockHash.String())
 	ctx := ctxProvider(block.Block.Height)
-	msgs, err := filterTransactions(k, ctxProvider, txConfigProvider, earliestVersion, block, includeSynthetic, false, cacheCreationMutex, globalBlockCache)
-	if err != nil {
-		return nil, err
-	}
+	msgs := filterTransactions(k, ctxProvider, txConfigProvider, block, includeSynthetic, false, cacheCreationMutex, globalBlockCache)
 	evmTxIndex, foundTx, etx, logIndexOffset := GetEvmTxIndex(ctx, block, msgs, receipt.TransactionIndex, k)
 	// convert tx index including cosmos txs to tx index excluding cosmos txs
 	if !foundTx {
@@ -479,14 +464,14 @@ func encodeReceipt(
 		"blockHash":         bh,
 		"blockNumber":       hexutil.Uint64(receipt.BlockNumber),
 		"transactionHash":   common.HexToHash(receipt.TxHashHex),
-		"transactionIndex":  hexutil.Uint64(evmTxIndex),
+		"transactionIndex":  hexutil.Uint64(evmTxIndex), //nolint:gosec
 		"from":              common.HexToAddress(receipt.From),
 		"gasUsed":           hexutil.Uint64(receipt.GasUsed),
 		"cumulativeGasUsed": hexutil.Uint64(receipt.CumulativeGasUsed),
 		"logs":              logs,
 		"logsBloom":         bloom,
 		"type":              hexutil.Uint(receipt.TxType),
-		"effectiveGasPrice": (*hexutil.Big)(big.NewInt(int64(receipt.EffectiveGasPrice))),
+		"effectiveGasPrice": (*hexutil.Big)(big.NewInt(int64(receipt.EffectiveGasPrice))), // nolint:gosec
 		"status":            hexutil.Uint(receipt.Status),
 	}
 	if etx != nil && receipt.From == "" {

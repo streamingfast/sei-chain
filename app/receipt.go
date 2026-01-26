@@ -108,7 +108,6 @@ func (app *App) AddCosmosEventsToEVMReceiptIfApplicable(ctx sdk.Context, tx sdk.
 	if len(logs) == 0 {
 		return
 	}
-
 	txHash := common.BytesToHash(checksum[:])
 	if response.EvmTxInfo != nil {
 		txHash = common.HexToHash(response.EvmTxInfo.TxHash)
@@ -117,10 +116,10 @@ func (app *App) AddCosmosEventsToEVMReceiptIfApplicable(ctx sdk.Context, tx sdk.
 	addedLogs := utils.Map(logs, evmkeeper.ConvertSyntheticEthLog)
 
 	var bloom ethtypes.Bloom
-	if r, err := app.EvmKeeper.GetTransientReceipt(wasmToEvmEventCtx, txHash, uint64(ctx.TxIndex())); err == nil && r != nil {
-		r.Logs = append(r.Logs, utils.Map(logs, evmkeeper.ConvertSyntheticEthLog)...)
+	if r, err := app.EvmKeeper.GetTransientReceipt(wasmToEvmEventCtx, txHash, uint64(ctx.TxIndex())); err == nil && r != nil { //nolint:gosec
+		r.Logs = append(r.Logs, addedLogs...)
 		for i, l := range r.Logs {
-			l.Index = uint32(i)
+			l.Index = uint32(i) //nolint:gosec
 		}
 		bloom = ethtypes.CreateBloom(&ethtypes.Receipt{Logs: evmkeeper.GetLogsForTx(r, 0)})
 		r.LogsBloom = bloom[:]
@@ -131,12 +130,12 @@ func (app *App) AddCosmosEventsToEVMReceiptIfApplicable(ctx sdk.Context, tx sdk.
 		}
 	} else {
 		bloom = ethtypes.CreateBloom(&ethtypes.Receipt{Logs: logs})
-		r = &evmtypes.Receipt{
+		receipt := &evmtypes.Receipt{
 			TxType:           evmtypes.ShellEVMTxType,
 			TxHashHex:        txHash.Hex(),
 			GasUsed:          ctx.GasMeter().GasConsumed(),
-			BlockNumber:      uint64(ctx.BlockHeight()),
-			TransactionIndex: uint32(ctx.TxIndex()),
+			BlockNumber:      uint64(ctx.BlockHeight()), //nolint:gosec
+			TransactionIndex: uint32(ctx.TxIndex()),     //nolint:gosec
 			Logs:             addedLogs,
 			LogsBloom:        bloom[:],
 			Status:           uint32(ethtypes.ReceiptStatusSuccessful), // we don't create shell receipt for failed Cosmos tx since there is no event anyway
@@ -144,12 +143,12 @@ func (app *App) AddCosmosEventsToEVMReceiptIfApplicable(ctx sdk.Context, tx sdk.
 		sigTx, ok := tx.(authsigning.SigVerifiableTx)
 		if ok && len(sigTx.GetSigners()) > 0 {
 			// use the first signer as the `from`
-			r.From = app.EvmKeeper.GetEVMAddressOrDefault(wasmToEvmEventCtx, sigTx.GetSigners()[0]).Hex()
+			receipt.From = app.EvmKeeper.GetEVMAddressOrDefault(wasmToEvmEventCtx, sigTx.GetSigners()[0]).Hex()
 		}
-		_ = app.EvmKeeper.SetTransientReceipt(wasmToEvmEventCtx, txHash, r)
+		_ = app.EvmKeeper.SetTransientReceipt(wasmToEvmEventCtx, txHash, receipt)
 
 		if tracer := evmtracers.GetCtxBlockchainTracer(ctx); tracer != nil && tracer.OnSeiPostTxCosmosEvents != nil {
-			app.traceSeiPostTxCosmosEvents(ctx, tracer, tx, txHash, addedLogs, r, false)
+			app.traceSeiPostTxCosmosEvents(ctx, tracer, tx, txHash, addedLogs, receipt, false)
 		}
 	}
 	if d, found := app.EvmKeeper.GetEVMTxDeferredInfo(ctx); found {

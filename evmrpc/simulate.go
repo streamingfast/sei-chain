@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/export"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/sei-protocol/sei-chain/app/legacyabci"
 	"github.com/sei-protocol/sei-chain/precompiles/wasmd"
 	"github.com/sei-protocol/sei-chain/utils"
 	"github.com/sei-protocol/sei-chain/x/evm/keeper"
@@ -55,8 +57,8 @@ type SimulationAPI struct {
 func NewSimulationAPI(
 	ctxProvider func(int64) sdk.Context,
 	keeper *keeper.Keeper,
+	beginBlockKeepers legacyabci.BeginBlockKeepers,
 	txConfigProvider func(int64) client.TxConfig,
-	earliestVersion func() int64,
 	tmClient rpcclient.Client,
 	config *SimulateConfig,
 	app *baseapp.BaseApp,
@@ -64,9 +66,10 @@ func NewSimulationAPI(
 	connectionType ConnectionType,
 	globalBlockCache BlockCache,
 	cacheCreationMutex *sync.Mutex,
+	watermarks *WatermarkManager,
 ) *SimulationAPI {
 	api := &SimulationAPI{
-		backend:        NewBackend(ctxProvider, keeper, txConfigProvider, earliestVersion, tmClient, config, app, antehandler, globalBlockCache, cacheCreationMutex),
+		backend:        NewBackend(ctxProvider, keeper, beginBlockKeepers, txConfigProvider, tmClient, config, app, antehandler, globalBlockCache, cacheCreationMutex, watermarks),
 		connectionType: connectionType,
 	}
 	if config.MaxConcurrentSimulationCalls > 0 {
@@ -83,7 +86,7 @@ type AccessListResult struct {
 
 func (s *SimulationAPI) CreateAccessList(ctx context.Context, args export.TransactionArgs, blockNrOrHash *rpc.BlockNumberOrHash) (result *AccessListResult, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_createAccessList", s.connectionType, startTime)
+	defer recordMetricsWithError("eth_createAccessList", s.connectionType, startTime, returnErr)
 	bNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber)
 	if blockNrOrHash != nil {
 		bNrOrHash = *blockNrOrHash
@@ -142,7 +145,7 @@ func (s *SimulationAPI) EstimateGasAfterCalls(ctx context.Context, args export.T
 
 func (s *SimulationAPI) Call(ctx context.Context, args export.TransactionArgs, blockNrOrHash *rpc.BlockNumberOrHash, overrides *export.StateOverride, blockOverrides *export.BlockOverrides) (result hexutil.Bytes, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("eth_call", s.connectionType, startTime)
+	defer recordMetricsWithError("eth_call", s.connectionType, startTime, returnErr)
 	/* ---------- fail‑fast limiter ---------- */
 	if s.requestLimiter != nil {
 		if !s.requestLimiter.TryAcquire(1) {
@@ -218,39 +221,42 @@ type Backend struct {
 	*eth.EthAPIBackend
 	ctxProvider        func(int64) sdk.Context
 	txConfigProvider   func(int64) client.TxConfig
-	earliestVersion    func() int64
 	keeper             *keeper.Keeper
 	tmClient           rpcclient.Client
 	config             *SimulateConfig
 	app                *baseapp.BaseApp
+	beginBlockKeepers  legacyabci.BeginBlockKeepers
 	antehandler        sdk.AnteHandler
 	globalBlockCache   BlockCache
 	cacheCreationMutex *sync.Mutex
+	watermarks         *WatermarkManager
 }
 
 func NewBackend(
 	ctxProvider func(int64) sdk.Context,
 	keeper *keeper.Keeper,
+	beginBlockKeepers legacyabci.BeginBlockKeepers,
 	txConfigProvider func(int64) client.TxConfig,
-	earliestVersion func() int64,
 	tmClient rpcclient.Client,
 	config *SimulateConfig,
 	app *baseapp.BaseApp,
 	antehandler sdk.AnteHandler,
 	globalBlockCache BlockCache,
 	cacheCreationMutex *sync.Mutex,
+	watermarks *WatermarkManager,
 ) *Backend {
 	return &Backend{
 		ctxProvider:        ctxProvider,
 		keeper:             keeper,
+		beginBlockKeepers:  beginBlockKeepers,
 		txConfigProvider:   txConfigProvider,
-		earliestVersion:    earliestVersion,
 		tmClient:           tmClient,
 		config:             config,
 		app:                app,
 		antehandler:        antehandler,
 		globalBlockCache:   globalBlockCache,
 		cacheCreationMutex: cacheCreationMutex,
+		watermarks:         watermarks,
 	}
 }
 
@@ -278,16 +284,23 @@ func (b *Backend) GetTransaction(ctx context.Context, txHash common.Hash) (found
 	if err != nil {
 		return false, nil, common.Hash{}, 0, 0, err
 	}
+	if receipt.BlockNumber > uint64(math.MaxInt64) {
+		return false, nil, common.Hash{}, 0, 0, errors.New("block number exceeds int64 max value")
+	}
+
 	txHeight := int64(receipt.BlockNumber)
-	block, err := blockByNumber(ctx, b.tmClient, &txHeight)
+	block, err := blockByNumberRespectingWatermarks(ctx, b.tmClient, b.watermarks, &txHeight, 1)
 	if err != nil {
 		return false, nil, common.Hash{}, 0, 0, err
 	}
+	if int(receipt.TransactionIndex) >= len(block.Block.Txs) {
+		return false, nil, common.Hash{}, 0, 0, errors.New("transaction index out of range")
+	}
 	txIndex := hexutil.Uint(receipt.TransactionIndex)
-	tmTx := block.Block.Txs[int(txIndex)]
+	tmTx := block.Block.Txs[txIndex]
 	tx = getEthTxForTxBz(tmTx, b.txConfigProvider(block.Block.Height).TxDecoder())
 	blockHash = common.BytesToHash(block.Block.Header.Hash().Bytes())
-	return true, tx, blockHash, uint64(txHeight), uint64(txIndex), nil
+	return true, tx, blockHash, uint64(txHeight), uint64(txIndex), nil //nolint:gosec
 }
 
 func (b *Backend) ChainDb() ethdb.Database {
@@ -313,7 +326,7 @@ func (b Backend) ConvertBlockNumber(bn rpc.BlockNumber) int64 {
 
 func (b Backend) BlockByNumber(ctx context.Context, bn rpc.BlockNumber) (*ethtypes.Block, []tracersutils.TraceBlockMetadata, error) {
 	blockNum := b.ConvertBlockNumber(bn)
-	tmBlock, err := blockByNumber(ctx, b.tmClient, &blockNum)
+	tmBlock, err := blockByNumberRespectingWatermarks(ctx, b.tmClient, b.watermarks, &blockNum, 1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -325,10 +338,7 @@ func (b Backend) BlockByNumber(ctx context.Context, bn rpc.BlockNumber) (*ethtyp
 	sdkCtx := b.ctxProvider(LatestCtxHeight)
 	var txs []*ethtypes.Transaction
 	var metadata []tracersutils.TraceBlockMetadata
-	msgs, err := filterTransactions(b.keeper, b.ctxProvider, b.txConfigProvider, b.earliestVersion, tmBlock, false, false, b.cacheCreationMutex, b.globalBlockCache)
-	if err != nil {
-		return nil, nil, err
-	}
+	msgs := filterTransactions(b.keeper, b.ctxProvider, b.txConfigProvider, tmBlock, false, false, b.cacheCreationMutex, b.globalBlockCache)
 	idxToMsgs := make(map[int]sdk.Msg, len(msgs))
 	for _, msg := range msgs {
 		idxToMsgs[msg.index] = msg.msg
@@ -350,6 +360,10 @@ func (b Backend) BlockByNumber(ctx context.Context, bn rpc.BlockNumber) (*ethtyp
 					continue
 				}
 				ethtx, _ := m.AsTransaction()
+				if ethtx == nil {
+					// AsTransaction may return nil if it fails to unpack the tx data.
+					continue
+				}
 				receipt, err := b.keeper.GetReceipt(sdkCtx, ethtx.Hash())
 				if err != nil { //nolint:gosec
 					continue
@@ -369,7 +383,7 @@ func (b Backend) BlockByNumber(ctx context.Context, bn rpc.BlockNumber) (*ethtyp
 				IdxInEthBlock:              -1,
 				TraceRunnable: func(sd vm.StateDB) {
 					typedStateDB := state.GetDBImpl(sd)
-					_ = b.app.DeliverTx(typedStateDB.Ctx(), abci.RequestDeliverTx{}, decoded, sha256.Sum256(tmBlock.Block.Txs[i]))
+					_ = b.app.DeliverTx(typedStateDB.Ctx(), abci.RequestDeliverTxV2{}, decoded, sha256.Sum256(tmBlock.Block.Txs[i]))
 				},
 			})
 		}
@@ -384,7 +398,7 @@ func (b Backend) BlockByNumber(ctx context.Context, bn rpc.BlockNumber) (*ethtyp
 }
 
 func (b Backend) BlockByHash(ctx context.Context, hash common.Hash) (*ethtypes.Block, []tracersutils.TraceBlockMetadata, error) {
-	tmBlock, err := blockByHash(ctx, b.tmClient, hash.Bytes())
+	tmBlock, err := blockByHashRespectingWatermarks(ctx, b.tmClient, b.watermarks, hash.Bytes(), 1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -396,9 +410,18 @@ func (b *Backend) RPCGasCap() uint64 { return b.config.GasCap }
 
 func (b *Backend) RPCEVMTimeout() time.Duration { return b.config.EVMTimeout }
 
+func (b *Backend) chainConfigForHeight(height int64) *params.ChainConfig {
+	ctx := b.ctxProvider(height)
+	sstore := b.keeper.GetSstoreSetGasEIP2200(ctx)
+	return types.DefaultChainConfig().EthereumConfigWithSstore(b.keeper.ChainID(ctx), &sstore)
+}
+
 func (b *Backend) ChainConfig() *params.ChainConfig {
-	ctx := b.ctxProvider(LatestCtxHeight)
-	return types.DefaultChainConfig().EthereumConfig(b.keeper.ChainID(ctx))
+	return b.chainConfigForHeight(LatestCtxHeight)
+}
+
+func (b *Backend) ChainConfigAtHeight(height int64) *params.ChainConfig {
+	return b.chainConfigForHeight(height)
 }
 
 func (b *Backend) GetPoolNonce(_ context.Context, addr common.Address) (uint64, error) {
@@ -476,7 +499,7 @@ func (b *Backend) ReplayTransactionTillIndex(ctx context.Context, block *ethtype
 		if utils.IsTxPrioritized(sdkTx) {
 			continue
 		}
-		_ = b.app.DeliverTx(sdkCtx, abci.RequestDeliverTx{Tx: tx}, sdkTx, sha256.Sum256(tx))
+		_ = b.app.DeliverTx(sdkCtx, abci.RequestDeliverTxV2{Tx: tx}, sdkTx, sha256.Sum256(tx))
 	}
 	return state.NewDBImpl(sdkCtx.WithIsEVM(true), b.keeper, true), tmBlock.Block.Txs, nil
 }
@@ -496,11 +519,10 @@ func (b *Backend) initializeBlock(ctx context.Context, block *ethtypes.Block) (s
 	prevBlockHeight := block.Number().Int64() - 1
 
 	blockNumber := block.Number().Int64()
-	tmBlock, err := b.tmClient.Block(ctx, &blockNumber)
+	tmBlock, err := blockByNumberRespectingWatermarks(ctx, b.tmClient, b.watermarks, &blockNumber, 1)
 	if err != nil {
 		return sdk.Context{}, nil, fmt.Errorf("cannot find block %d from tendermint", blockNumber)
 	}
-	TraceTendermintIfApplicable(ctx, "Block", []string{stringifyInt64Ptr(&blockNumber)}, tmBlock)
 	res, err := b.tmClient.Validators(ctx, &prevBlockHeight, nil, nil) // todo: load all
 	if err != nil {
 		return sdk.Context{}, nil, fmt.Errorf("failed to load validators for block %d from tendermint", prevBlockHeight)
@@ -509,7 +531,7 @@ func (b *Backend) initializeBlock(ctx context.Context, block *ethtypes.Block) (s
 	reqBeginBlock := tmBlock.Block.ToReqBeginBlock(res.Validators)
 	reqBeginBlock.Simulate = true
 	sdkCtx := b.ctxProvider(prevBlockHeight).WithBlockHeight(blockNumber).WithBlockTime(tmBlock.Block.Time)
-	_ = b.app.BeginBlock(sdkCtx, reqBeginBlock)
+	legacyabci.BeginBlock(sdkCtx, blockNumber, reqBeginBlock.LastCommitInfo.Votes, tmBlock.Block.Evidence.ToABCI(), b.beginBlockKeepers)
 	sdkCtx = sdkCtx.WithNextMs(
 		b.ctxProvider(sdkCtx.BlockHeight()).MultiStore(),
 		[]string{"oracle", "oracle_mem"},
@@ -522,7 +544,9 @@ func (b *Backend) GetEVM(_ context.Context, msg *core.Message, stateDB vm.StateD
 	if blockCtx == nil {
 		blockCtx, _ = b.keeper.GetVMBlockContext(b.ctxProvider(LatestCtxHeight).WithIsEVM(true).WithEVMEntryViaWasmdPrecompile(wasmd.IsWasmdCall(msg.To)), b.keeper.GetGasPool())
 	}
-	evm := vm.NewEVM(*blockCtx, stateDB, b.ChainConfig(), *vmConfig, b.keeper.CustomPrecompiles(b.ctxProvider(h.Number.Int64())))
+	height := h.Number.Int64()
+	chainCfg := b.chainConfigForHeight(height)
+	evm := vm.NewEVM(*blockCtx, stateDB, chainCfg, *vmConfig, b.keeper.CustomPrecompiles(b.ctxProvider(height)))
 	evm.SetTxContext(txContext)
 	return evm
 }
@@ -538,26 +562,33 @@ func (b *Backend) SuggestGasTipCap(context.Context) (*big.Int, error) {
 }
 
 func (b *Backend) getBlockHeight(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (int64, bool, error) {
-	var block *coretypes.ResultBlock
-	var err error
-	var isLatestBlock bool
-	if blockNr, ok := blockNrOrHash.Number(); ok {
-		blockNumber, blockNumErr := getBlockNumber(ctx, b.tmClient, blockNr)
-		if blockNumErr != nil {
-			return 0, false, blockNumErr
+	var (
+		block         *coretypes.ResultBlock
+		err           error
+		isLatestBlock bool
+	)
+
+	if blockNrOrHash.BlockHash != nil {
+		block, err = blockByHashRespectingWatermarks(ctx, b.tmClient, b.watermarks, blockNrOrHash.BlockHash[:], 1)
+		if err != nil {
+			return 0, false, err
 		}
-		if blockNumber == nil {
-			// we don't want to get the latest block from Tendermint's perspective, because
-			// Tendermint writes store in TM store before commits application state. The
-			// latest block in Tendermint may not have its application state committed yet.
-			currentHeight := b.ctxProvider(LatestCtxHeight).BlockHeight()
-			blockNumber = &currentHeight
+		return block.Block.Height, false, nil
+	}
+
+	var blockNumberPtr *int64
+	if blockNrOrHash.BlockNumber != nil {
+		blockNumberPtr, err = getBlockNumber(ctx, b.tmClient, *blockNrOrHash.BlockNumber)
+		if err != nil {
+			return 0, false, err
+		}
+		if blockNumberPtr == nil {
 			isLatestBlock = true
 		}
-		block, err = blockByNumber(ctx, b.tmClient, blockNumber)
 	} else {
-		block, err = blockByHash(ctx, b.tmClient, blockNrOrHash.BlockHash[:])
+		isLatestBlock = true
 	}
+	block, err = blockByNumberRespectingWatermarks(ctx, b.tmClient, b.watermarks, blockNumberPtr, 1)
 	if err != nil {
 		return 0, false, err
 	}
@@ -573,13 +604,13 @@ func (b *Backend) getHeader(blockNumber *big.Int) *ethtypes.Header {
 	}
 	// Get block results to access consensus parameters
 	number := blockNumber.Int64()
-	block, blockErr := blockByNumber(context.Background(), b.tmClient, &number)
+	block, blockErr := blockByNumberRespectingWatermarks(context.Background(), b.tmClient, b.watermarks, &number, 1)
 	var gasLimit uint64
 	if blockErr == nil {
 		// Try to get consensus parameters from block results
 		blockRes, blockResErr := blockResultsWithRetry(context.Background(), b.tmClient, &number)
 		if blockResErr == nil && blockRes.ConsensusParamUpdates != nil && blockRes.ConsensusParamUpdates.Block != nil {
-			gasLimit = uint64(blockRes.ConsensusParamUpdates.Block.MaxGas)
+			gasLimit = uint64(blockRes.ConsensusParamUpdates.Block.MaxGas) //nolint:gosec
 		} else {
 			// Fallback to default if block results unavailable
 			gasLimit = keeper.DefaultBlockGasLimit

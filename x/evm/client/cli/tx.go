@@ -134,7 +134,7 @@ func CmdAssociateAddress() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req, err := http.NewRequest(http.MethodGet, rpc, strings.NewReader(body))
+			req, err := http.NewRequest(http.MethodPost, rpc, strings.NewReader(body))
 			if err != nil {
 				return err
 			}
@@ -143,7 +143,7 @@ func CmdAssociateAddress() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer res.Body.Close()
+			defer func() { _ = res.Body.Close() }()
 			resBody, err := io.ReadAll(res.Body)
 			if err != nil {
 				return err
@@ -616,7 +616,7 @@ func getPrivateKey(cmd *cobra.Command) (*ecdsa.PrivateKey, error) {
 
 func getNonce(rpc string, key ecdsa.PublicKey) (uint64, error) {
 	nonceQuery := fmt.Sprintf("{\"jsonrpc\": \"2.0\",\"method\": \"eth_getTransactionCount\",\"params\":[\"%s\",\"pending\"],\"id\":\"send-cli\"}", crypto.PubkeyToAddress(key).Hex())
-	req, err := http.NewRequest(http.MethodGet, rpc, strings.NewReader(nonceQuery))
+	req, err := http.NewRequest(http.MethodPost, rpc, strings.NewReader(nonceQuery))
 	if err != nil {
 		return 0, err
 	}
@@ -625,7 +625,7 @@ func getNonce(rpc string, key ecdsa.PublicKey) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	resBody, err := io.ReadAll(res.Body)
 	if err != nil {
 		return 0, err
@@ -643,7 +643,7 @@ func getNonce(rpc string, key ecdsa.PublicKey) (uint64, error) {
 
 func getChainId(rpc string) (*big.Int, error) {
 	q := "{\"jsonrpc\": \"2.0\",\"method\": \"eth_chainId\",\"params\":[],\"id\":\"send-cli\"}"
-	req, err := http.NewRequest(http.MethodGet, rpc, strings.NewReader(q))
+	req, err := http.NewRequest(http.MethodPost, rpc, strings.NewReader(q))
 	if err != nil {
 		return nil, err
 	}
@@ -652,7 +652,7 @@ func getChainId(rpc string) (*big.Int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	resBody, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err

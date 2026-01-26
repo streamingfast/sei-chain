@@ -1,55 +1,62 @@
-# docker build . -t sei-protocol/sei:latest
-# docker run --rm -it sei-protocol/sei:latest /bin/sh
-FROM docker.io/golang:1.24.5 AS go-builder
+ARG SEICTL_VERSION=v0.0.5@sha256:268fc871e8358e706f505f0ce9ef318761e0d00d317716e9d87218734ae1a81c
 
-# this comes from standard alpine nightly file
-#  https://github.com/rust-lang/docker-rust-nightly/blob/master/alpine3.12/Dockerfile
-# with some changes to support our toolchain, etc
-SHELL ["/bin/sh", "-ecuxo", "pipefail"]
-# we probably want to default to latest and error
-# since this is predominantly for dev use
-# hadolint ignore=DL3018
-RUN apk add --no-cache ca-certificates build-base git
-# NOTE: add these to run with LEDGER_ENABLED=true
-# RUN apk add libusb-dev linux-headers
+FROM ghcr.io/sei-protocol/seictl:${SEICTL_VERSION} AS seictl
+FROM docker.io/golang:1.24-bookworm@sha256:fc58bb98c4b7ebc8211c94df9dee40489e48363c69071bceca91aa59023b0dee AS builder
+WORKDIR /go/src/sei-chain
 
-WORKDIR /code
+COPY sei-wasmd/x/wasm/artifacts/v152/api/*.so /tmp/wasmd-libs/
+COPY sei-wasmd/x/wasm/artifacts/v154/api/*.so /tmp/wasmd-libs/
+COPY sei-wasmd/x/wasm/artifacts/v155/api/*.so /tmp/wasmd-libs/
+COPY sei-wasmvm/internal/api/*.so /tmp/wasmvm-libs/
+ARG TARGETARCH
+RUN mkdir -p /go/lib && \
+    case "${TARGETARCH}" in \
+      amd64) ARCH_SUFFIX="x86_64" ;; \
+      arm64) ARCH_SUFFIX="aarch64" ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac && \
+    cp /tmp/wasmd-libs/libwasmvm152.${ARCH_SUFFIX}.so /go/lib/ && \
+    cp /tmp/wasmd-libs/libwasmvm154.${ARCH_SUFFIX}.so /go/lib/ && \
+    cp /tmp/wasmd-libs/libwasmvm155.${ARCH_SUFFIX}.so /go/lib/ && \
+    cp /tmp/wasmvm-libs/libwasmvm.${ARCH_SUFFIX}.so /go/lib/
 
-# Download dependencies and CosmWasm libwasmvm if found.
-ADD go.mod go.sum ./
-RUN set -eux; \
-  export ARCH=$(uname -m); \
-  # Currently github.com/CosmWasm/wasmvm is being overriden by github.com/sei-protocol/sei-wasmvm
-  # (see go.mod). However the rust precompiles are still fetched from the upstream repository.
-  # Here we assume that the sei-wasm release version is prefixed with the wasmvm release version
-  # with the matching precompiles. Therefore, to compute the download url, we just strip the suffix
-  # of the sei-wasm release version.
-  WASM_VERSION=$(go list -f {{.Replace.Version}} -m github.com/CosmWasm/wasmvm | sed s/-.*//); \
-  if [ ! -z "${WASM_VERSION}" ]; then \
-  wget -O /lib/libwasmvm_muslc.a https://github.com/CosmWasm/wasmvm/releases/download/${WASM_VERSION}/libwasmvm_muslc.${ARCH}.a; \
-  fi; \
-  wget -O /lib/libwasmvm152_muslc.a https://github.com/sei-protocol/sei-wasmd/releases/download/v0.3.6/libwasmvm152_muslc.${ARCH}.a; \
-  wget -O /lib/libwasmvm155_muslc.a https://github.com/sei-protocol/sei-wasmd/releases/download/v0.3.6/libwasmvm155_muslc.${ARCH}.a; \
-  go mod download;
+# Cache Go modules
+COPY go.work go.work.sum ./
+COPY go.mod go.sum ./
+COPY sei-wasmvm/go.mod sei-wasmvm/go.sum ./sei-wasmvm/
+COPY sei-wasmd/go.mod sei-wasmd/go.sum ./sei-wasmd/
+COPY sei-cosmos/go.mod sei-cosmos/go.sum ./sei-cosmos/
+COPY sei-tendermint/go.mod sei-tendermint/go.sum ./sei-tendermint/
+COPY sei-ibc-go/go.mod sei-ibc-go/go.sum ./sei-ibc-go/
+COPY sei-db/go.mod sei-db/go.sum ./sei-db/
+RUN go mod download
 
-# Copy over code
-COPY . /code/
+COPY . .
+ENV CGO_ENABLED=1
+ARG SEI_CHAIN_REF=""
+ARG GO_BUILD_TAGS=""
+ARG GO_BUILD_ARGS=""
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    BUILD_TAGS="netgo ledger ${GO_BUILD_TAGS}" && \
+    VERSION_PKG="github.com/cosmos/cosmos-sdk/version" && \
+    LDFLAGS="\
+      -X ${VERSION_PKG}.Name=sei \
+      -X ${VERSION_PKG}.AppName=seid \
+      -X ${VERSION_PKG}.Version=$(git describe --tags || echo "${SEI_CHAIN_REF}") \
+      -X ${VERSION_PKG}.Commit=$(git log -1 --format='%H') \
+      -X '${VERSION_PKG}.BuildTags=${BUILD_TAGS}'" && \
+    go build -tags "${BUILD_TAGS}" -ldflags "${LDFLAGS}" ${GO_BUILD_ARGS} -o /go/bin/seid ./cmd/seid && \
+    go build -tags "${BUILD_TAGS}" -ldflags "${LDFLAGS}" ${GO_BUILD_ARGS} -o /go/bin/price-feeder ./oracle/price-feeder
 
-# force it to use static lib (from above) not standard libgo_cosmwasm.so file
-# then log output of file /code/build/seid
-# then ensure static linking
-RUN LEDGER_ENABLED=false BUILD_TAGS=muslc LINK_STATICALLY=true make build-verbose -B \
-  && file /code/build/seid \
-  && echo "Ensuring binary is statically linked ..." \
-  && (file /code/build/seid | grep "statically linked")
+FROM docker.io/ubuntu:24.04@sha256:104ae83764a5119017b8e8d6218fa0832b09df65aae7d5a6de29a85d813da2fb
 
-# --------------------------------------------------------
-FROM alpine:3.18
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY --from=go-builder /code/build/seid /usr/bin/seid
+COPY --from=builder /go/bin/seid /go/bin/price-feeder /usr/bin/
+COPY --from=seictl /usr/bin/seictl /usr/bin/
+COPY --from=builder /go/lib/*.so /usr/lib/
 
-
-# rest server, tendermint p2p, tendermint rpc
-EXPOSE 1317 26656 26657
-
-CMD ["/usr/bin/seid", "version"]
+ENTRYPOINT ["/usr/bin/seid"]

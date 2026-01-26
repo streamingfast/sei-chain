@@ -27,14 +27,20 @@ type TxPoolConfig struct {
 	maxNumTxs int
 }
 
+// NewTxPoolConfig creates a new TxPoolConfig primarily for tests.
+func NewTxPoolConfig(maxNumTxs int) *TxPoolConfig {
+	return &TxPoolConfig{maxNumTxs: maxNumTxs}
+}
+
 func NewTxPoolAPI(tmClient rpcclient.Client, k *keeper.Keeper, ctxProvider func(int64) sdk.Context, txConfigProvider func(int64) client.TxConfig, txPoolConfig *TxPoolConfig, connectionType ConnectionType) *TxPoolAPI {
 	return &TxPoolAPI{tmClient: tmClient, keeper: k, ctxProvider: ctxProvider, txConfigProvider: txConfigProvider, txPoolConfig: txPoolConfig, connectionType: connectionType}
 }
 
-// For now, we put all unconfirmed txs in pending and none in queued
+// Content returns the content of the txpool.
+// for now, we put all unconfirmed txs in pending and none in queued.
 func (t *TxPoolAPI) Content(ctx context.Context) (result map[string]map[string]map[string]*export.RPCTransaction, returnErr error) {
 	startTime := time.Now()
-	defer recordMetrics("sei_content", t.connectionType, startTime)
+	defer recordMetricsWithError("sei_content", t.connectionType, startTime, returnErr)
 	content := map[string]map[string]map[string]*export.RPCTransaction{
 		"pending": make(map[string]map[string]*export.RPCTransaction),
 		"queued":  make(map[string]map[string]*export.RPCTransaction),
@@ -52,12 +58,10 @@ func (t *TxPoolAPI) Content(ctx context.Context) (result map[string]map[string]m
 		if ethTx == nil { // not an evm tx
 			continue
 		}
-
-		fromAddr, err := rpcutils.RecoverEVMSender(ethTx, sdkCtx.BlockHeight(), sdkCtx.BlockTime().Unix())
+		fromAddr, err := rpcutils.RecoverEVMSenderWithContext(sdkCtx, ethTx)
 		if err != nil {
 			return nil, err
 		}
-
 		nonce := ethTx.Nonce()
 		chainConfig := types.DefaultChainConfig().EthereumConfig(t.keeper.ChainID(sdkCtx))
 		res := export.NewRPCPendingTransaction(ethTx, nil, chainConfig)
