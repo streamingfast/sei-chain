@@ -165,20 +165,3 @@ func TestTraceBlockWithFailureThenSuccess(t *testing.T) {
 		},
 	)
 }
-
-func TestTraceBlockWithFailureThenSuccess(t *testing.T) {
-	maxUseiInWei := sdk.NewInt(math.MaxInt64).Mul(state.SdkUseiToSweiMultiplier).BigInt()
-	insufficientFundsTx := signAndEncodeTx(sendAmount(0, maxUseiInWei), mnemonic1)
-	successTx := signAndEncodeTx(send(1), mnemonic1)
-	SetupTestServer([][][]byte{{insufficientFundsTx, successTx}}, mnemonicInitializer(mnemonic1)).Run(
-		func(port int) {
-			res := sendRequestWithNamespace("debug", port, "traceBlockByNumber", "0x2", map[string]interface{}{
-				"timeout": "60s", "tracer": "flatCallTracer",
-			})
-			// the first tx should show a trace failure indicating insufficient funds
-			require.Contains(t, res["result"].([]interface{})[0].(map[string]interface{})["result"].([]interface{})[0].(map[string]interface{})["error"].(string), "insufficient funds")
-			// the second tx should show a trace success and a gas used of 21000 (0x5208)
-			require.Equal(t, "0x5208", res["result"].([]interface{})[1].(map[string]interface{})["result"].([]interface{})[0].(map[string]interface{})["result"].(map[string]interface{})["gasUsed"])
-		},
-	)
-}

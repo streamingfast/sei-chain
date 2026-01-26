@@ -1907,6 +1907,11 @@ func newBlockHeaderFromChainHeader(h *types.Header) *pbeth.BlockHeader {
 		parentBeaconRootBytes = root.Bytes()
 	}
 
+	var requestsHashBytes []byte
+	if hash := h.RequestsHash; hash != nil {
+		requestsHashBytes = hash.Bytes()
+	}
+
 	pbHead := &pbeth.BlockHeader{
 		Hash:             h.Hash().Bytes(),
 		Number:           h.Number.Uint64(),
@@ -1929,6 +1934,7 @@ func newBlockHeaderFromChainHeader(h *types.Header) *pbeth.BlockHeader {
 		BlobGasUsed:      h.BlobGasUsed,
 		ExcessBlobGas:    h.ExcessBlobGas,
 		ParentBeaconRoot: parentBeaconRootBytes,
+		RequestsHash:     requestsHashBytes,
 
 		// Only set on Polygon fork(s)
 		TxDependency: nil,
