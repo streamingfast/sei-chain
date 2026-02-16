@@ -329,6 +329,7 @@ func (t *Tree) ReplaceWith(other *Tree) error {
 	t.initialVersion = other.initialVersion
 	t.cowVersion = other.cowVersion
 	t.zeroCopy = other.zeroCopy
+
 	if snapshot != nil {
 		return snapshot.Close()
 	}

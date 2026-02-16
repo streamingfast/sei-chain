@@ -35,6 +35,7 @@ func NewCommitStore(homeDir string, logger logger.Logger, config config.StateCom
 		SnapshotMinTimeInterval:          time.Duration(config.SnapshotMinTimeInterval) * time.Second,
 		SnapshotWriterLimit:              config.SnapshotWriterLimit,
 		PrefetchThreshold:                config.SnapshotPrefetchThreshold,
+		SnapshotWriteRateMBps:            config.SnapshotWriteRateMBps,
 		CreateIfMissing:                  true,
 		OnlyAllowExportOnSnapshotVersion: config.OnlyAllowExportOnSnapshotVersion,
 	}
@@ -69,7 +70,7 @@ func (cs *CommitStore) Rollback(targetVersion int64) error {
 
 // copyExisting is for creating new memiavl object given existing folder
 func (cs *CommitStore) LoadVersion(targetVersion int64, copyExisting bool) (types.Committer, error) {
-	cs.logger.Info(fmt.Sprintf("SeiDB load target memIAVL version %d, copyExisting = %v\n", targetVersion, copyExisting))
+	cs.logger.Info(fmt.Sprintf("SeiDB load target memIAVL version %d, copyExisting = %v", targetVersion, copyExisting))
 	if copyExisting {
 		opts := cs.opts
 		opts.ReadOnly = copyExisting
