@@ -46,9 +46,9 @@ const (
 	ImportCommitBatchSize = 10000
 	PruneCommitBatchSize  = 50
 	DeleteCommitBatchSize = 50
-
 	// Number of workers to use for hash computation
 	HashComputationWorkers = 10
+	MinWALEntriesToKeep    = 1000
 )
 
 var (
@@ -61,6 +61,7 @@ type Database struct {
 	storage      *pebble.DB
 	asyncWriteWG sync.WaitGroup
 	config       config.StateStoreConfig
+	closed       atomic.Bool
 	// Earliest version for db after pruning
 	earliestVersion atomic.Int64
 	// Latest version for db
@@ -164,13 +165,14 @@ func New(dataDir string, config config.StateStoreConfig) (*Database, error) {
 	if config.KeepRecent < 0 {
 		return nil, errors.New("KeepRecent must be non-negative")
 	}
+	walKeepRecent := math.Max(MinWALEntriesToKeep, float64(config.AsyncWriteBuffer+1))
 	streamHandler, _ := changelog.NewStream(
 		logger.NewNopLogger(),
 		utils.GetChangelogPath(dataDir),
 		changelog.Config{
 			DisableFsync:  true,
 			ZeroCopy:      true,
-			KeepRecent:    uint64(config.KeepRecent),
+			KeepRecent:    uint64(walKeepRecent),
 			PruneInterval: time.Duration(config.PruneIntervalSeconds) * time.Second,
 		},
 	)
@@ -187,6 +189,8 @@ func New(dataDir string, config config.StateStoreConfig) (*Database, error) {
 }
 
 func (db *Database) Close() error {
+	db.closed.Store(true)
+
 	// Stop background metrics collection
 	if db.metricsCancel != nil {
 		db.metricsCancel()
@@ -634,6 +638,11 @@ func (db *Database) writeAsyncInBackground() {
 // it has been updated. This occurs when that module's keys are updated in between pruning runs, the node after is restarted.
 // This is not a large issue given the next time that module is updated, it will be properly pruned thereafter.
 func (db *Database) Prune(version int64) (_err error) {
+	// Defensive check: ensure database is not closed
+	if db.closed.Load() {
+		return errors.New("pebbledb: database is closed")
+	}
+
 	startTime := time.Now()
 	defer func() {
 		otelMetrics.pruneLatency.Record(
