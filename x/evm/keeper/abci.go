@@ -16,6 +16,7 @@ import (
 	"github.com/sei-protocol/sei-chain/utils"
 	"github.com/sei-protocol/sei-chain/utils/metrics"
 	"github.com/sei-protocol/sei-chain/x/evm/state"
+	"github.com/sei-protocol/sei-chain/x/evm/tracers"
 	"github.com/sei-protocol/sei-chain/x/evm/types"
 )
 
@@ -95,6 +96,11 @@ func (k *Keeper) EndBlock(ctx sdk.Context, height int64, blockGasUsed int64) {
 		coinbase = k.AccountKeeper().GetModuleAddress(authtypes.FeeCollectorName)
 	}
 	evmTxDeferredInfoList := k.GetAllEVMTxDeferredInfo(ctx)
+	evmHooks := tracers.GetCtxEthTracingHooks(ctx)
+	var coinbaseEVMAddress common.Address
+	if evmHooks != nil {
+		coinbaseEVMAddress = tracers.GetEVMAddress(ctx, k, coinbase)
+	}
 	denom := k.GetBaseDenom(ctx)
 	surplus := k.GetAnteSurplusSum(ctx)
 	for _, deferredInfo := range evmTxDeferredInfoList {
@@ -121,6 +127,10 @@ func (k *Keeper) EndBlock(ctx sdk.Context, height int64, blockGasUsed int64) {
 			if err := k.BankKeeper().SendCoinsAndWei(ctx, coinbaseAddress, coinbase, balance, weiBalance); err != nil {
 				logger.Error("failed to send usei surplus to coinbase account", "from", coinbaseAddress, "err", err)
 			}
+
+			if evmHooks != nil && evmHooks.OnBalanceChange != nil {
+				tracers.TraceTransactionRewards(ctx, evmHooks, k.BankKeeper(), coinbase, coinbaseEVMAddress, balance, weiBalance)
+			}
 		}
 		surplus = surplus.Add(deferredInfo.Surplus)
 	}
@@ -135,6 +145,13 @@ func (k *Keeper) EndBlock(ctx sdk.Context, height int64, blockGasUsed int64) {
 			if err := k.BankKeeper().AddWei(ctx, k.AccountKeeper().GetModuleAddress(types.ModuleName), surplusWei); err != nil {
 				logger.Error("failed to send wei surplus to EVM module account", "surplus", surplusWei)
 			}
+		}
+
+		if evmHooks != nil && evmHooks.OnBalanceChange != nil && (surplusUsei.GT(sdk.ZeroInt()) || surplusWei.GT(sdk.ZeroInt())) {
+			evmModuleAddress := k.AccountKeeper().GetModuleAddress(types.ModuleName)
+			evmModuleAddressETH := tracers.GetEVMAddress(ctx, k, evmModuleAddress)
+
+			tracers.TraceBlockReward(ctx, evmHooks, k.BankKeeper(), evmModuleAddress, evmModuleAddressETH, surplusUsei, surplusWei)
 		}
 	}
 	allBlooms := utils.Map(evmTxDeferredInfoList, func(i *types.DeferredInfo) ethtypes.Bloom { return ethtypes.BytesToBloom(i.TxBloom) })

@@ -230,10 +230,10 @@ describe("EVM Test", function () {
 
          // The gas limit returned by the contract should match the block's gas limit
          expect(contractGasLimit).to.equal(blockGasLimit);
-         
+
          // Gas limit should be a reasonable value (greater than 0)
          expect(contractGasLimit).to.be.greaterThan(0);
-         
+
          debug(`Contract gas limit: ${contractGasLimit}`);
          debug(`Block gas limit: ${blockGasLimit}`);
        });
@@ -264,7 +264,7 @@ describe("EVM Test", function () {
 
         // Read the captured gas limit
         const gasLimitFromAssembly = await evmTester.getGasLimit();
-        
+
         // Also get it from getBlockProperties for comparison
         const blockProperties = await evmTester.getBlockProperties();
         const gasLimitFromBlockProperties = blockProperties.gaslimit;
@@ -279,11 +279,11 @@ describe("EVM Test", function () {
 
         // Verify it's a valid gas limit value
         expect(gasLimitFromAssembly).to.be.greaterThan(0);
-        
+
         // Gas limit should be within reasonable bounds (not too small, not too large)
         expect(gasLimitFromAssembly).to.be.greaterThan(21000); // Minimum for a simple transaction
         expect(gasLimitFromAssembly).to.be.lessThan(100_000_000); // 100M gas seems reasonable as upper bound
-        
+
         debug(`Gas limit from assembly: ${gasLimitFromAssembly}`);
       });
 
@@ -294,18 +294,18 @@ describe("EVM Test", function () {
 
         // Get the gas limit from the contract after the transaction
         const gasLimitFromContract = await evmTester.getGasLimit();
-        
+
         // Get the block that contains our transaction
         const transactionBlock = await ethers.provider.getBlock(receipt.blockNumber);
         const blockGasLimit = transactionBlock.gasLimit;
 
         // The gas limit should match the block's gas limit
         expect(gasLimitFromContract).to.equal(blockGasLimit);
-        
+
         // Verify the transaction was successful and gas limit is reasonable
         expect(receipt.status).to.equal(1);
         expect(gasLimitFromContract).to.be.greaterThan(receipt.gasUsed);
-        
+
         debug(`Transaction gas used: ${receipt.gasUsed}`);
         debug(`Block gas limit: ${gasLimitFromContract}`);
       });
@@ -390,18 +390,18 @@ describe("EVM Test", function () {
             maxFeePerGas: ethers.parseUnits('10', 'gwei')
           },
           {
-            maxPriorityFeePerGas: ethers.parseUnits('0', 'gwei'), 
+            maxPriorityFeePerGas: ethers.parseUnits('0', 'gwei'),
             maxFeePerGas: ethers.parseUnits('10', 'gwei')
           },
           {
             maxPriorityFeePerGas: ethers.parseUnits('10', 'gwei'),
-            maxFeePerGas: ethers.parseUnits('10', 'gwei') 
+            maxFeePerGas: ethers.parseUnits('10', 'gwei')
           }
         ];
 
         for (const testCase of testCases) {
           // send a tx with a gas to elevate the base fee
-          const heavyTxResponse = await evmTester.useGas(9500000, { 
+          const heavyTxResponse = await evmTester.useGas(9500000, {
             maxPriorityFeePerGas: ethers.parseUnits('10', 'gwei'),
             maxFeePerGas: ethers.parseUnits('10', 'gwei'),
             type: 2

@@ -126,7 +126,7 @@ func (k *Keeper) CallEVM(ctx sdk.Context, from common.Address, to *common.Addres
 	existingReceipt, err := k.GetTransientReceipt(ctx, ctx.TxSum(), uint64(ctx.TxIndex())) //nolint:gosec
 	if err == nil {
 		for _, l := range existingReceipt.Logs {
-			stateDB.AddLog(&ethtypes.Log{
+			stateDB.AddUntracedLog(&ethtypes.Log{
 				Address: common.HexToAddress(l.Address),
 				Topics:  utils.Map(l.Topics, common.HexToHash),
 				Data:    l.Data,

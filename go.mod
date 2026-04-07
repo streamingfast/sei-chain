@@ -78,6 +78,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
+	github.com/streamingfast/firehose-ethereum/types v0.0.0-20251021203458-622ff37c2740
 	github.com/stretchr/testify v1.11.1
 	github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d
 	github.com/tendermint/crypto v0.0.0-20191022145703-50d29ede1e15

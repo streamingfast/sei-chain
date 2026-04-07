@@ -141,6 +141,11 @@ type Config struct {
 	// EnabledLegacySeiApis lists which gated sei_* and sei2_* JSON-RPC methods are allowed on the EVM HTTP endpoint.
 	// Set in app.toml [evm] as enabled_legacy_sei_apis (see ReadConfig and ConfigTemplate defaults).
 	EnabledLegacySeiApis []string `mapstructure:"enabled_legacy_sei_apis"`
+	// The EVM tracer to use when doing node synchronization, applies to
+	// all block produced but traces only EVM transactions.
+	//
+	// Refer to x/evm/tracers/registry.go#GlobalLiveTracerRegistry for registered tracers.
+	LiveEVMTracer string `mapstructure:"live_evm_tracer"`
 }
 
 var DefaultConfig = Config{
@@ -178,6 +183,7 @@ var DefaultConfig = Config{
 		"sei_getEVMAddress",
 		"sei_getCosmosTx",
 	},
+	LiveEVMTracer: "",
 }
 
 const (
@@ -211,6 +217,7 @@ const (
 	flagWorkerPoolSize               = "evm.worker_pool_size"
 	flagWorkerQueueSize              = "evm.worker_queue_size"
 	flagEVMLegacySeiApis             = "evm.enabled_legacy_sei_apis"
+	flagLiveEVMTracer                = "evm.live_evm_tracer"
 )
 
 func ReadConfig(opts servertypes.AppOptions) (Config, error) {
@@ -363,6 +370,11 @@ func ReadConfig(opts servertypes.AppOptions) (Config, error) {
 	}
 	if v := opts.Get(flagEVMLegacySeiApis); v != nil {
 		if cfg.EnabledLegacySeiApis, err = cast.ToStringSliceE(v); err != nil {
+			return cfg, err
+		}
+	}
+	if v := opts.Get(flagLiveEVMTracer); v != nil {
+		if cfg.LiveEVMTracer, err = cast.ToStringE(v); err != nil {
 			return cfg, err
 		}
 	}
@@ -521,4 +533,8 @@ worker_pool_size = {{ .EVM.WorkerPoolSize }}
 # WorkerQueueSize defines the size of the task queue in the worker pool.
 # Default: 1000 tasks. Set to 0 to use the default.
 worker_queue_size = {{ .EVM.WorkerQueueSize }}
+
+# The EVM tracer to use when doing node synchronization, applies to
+# all block produced but traces only EVM transactions.
+# live_evm_tracer = "firehose"
 `

@@ -39,6 +39,7 @@ type opts struct {
 	rpcStatsInterval             interface{}
 	workerPoolSize               interface{}
 	workerQueueSize              interface{}
+	liveEVMTracer                interface{}
 }
 
 func (o *opts) Get(k string) interface{} {
@@ -135,6 +136,9 @@ func (o *opts) Get(k string) interface{} {
 	if k == "evm.enabled_legacy_sei_apis" {
 		return nil
 	}
+	if k == "evm.live_evm_tracer" {
+		return o.liveEVMTracer
+	}
 	panic("unknown key")
 }
 
@@ -171,6 +175,7 @@ func getDefaultOpts() opts {
 		10 * time.Second,
 		32,
 		1000,
+		"",
 	}
 }
 

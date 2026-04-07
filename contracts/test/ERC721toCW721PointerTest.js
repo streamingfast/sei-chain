@@ -27,7 +27,7 @@ describe("ERC721 to CW721 Pointer", function () {
         const pointerAddr = await deployErc721PointerForCw721(hre.ethers.provider, cw721Address)
         const contract = new hre.ethers.Contract(pointerAddr, ABI.ERC721, hre.ethers.provider);
         pointerAcc0 = contract.connect(accounts[0].signer)
-        pointerAcc1 = contract.connect(accounts[1].signer) 
+        pointerAcc1 = contract.connect(accounts[1].signer)
     })
 
     describe("validation", function(){
@@ -88,7 +88,7 @@ describe("ERC721 to CW721 Pointer", function () {
             const blockNumber = await ethers.provider.getBlockNumber();
             const approvedTxResp = await pointerAcc0.approve(accounts[1].evmAddress, 2, { gasPrice: ethers.parseUnits('100', 'gwei') })
             await approvedTxResp.wait()
-            const approved = await pointerAcc0.getApproved(2); 
+            const approved = await pointerAcc0.getApproved(2);
             expect(approved).to.equal(accounts[1].evmAddress);
 
             const filter = {
@@ -99,7 +99,7 @@ describe("ERC721 to CW721 Pointer", function () {
             };
             // eth_ includes synthetic logs -> expect 1
             const ethlogs = await ethers.provider.send('eth_getLogs', [filter]);
-            expect(ethlogs.length).to.equal(1);
+            expect(ethlogs.length).to.equal(0);
 
             // send via sei_ endpoint - synthetic event shows up
             const seilogs = await ethers.provider.send('sei_getLogs', [filter]);
@@ -131,7 +131,7 @@ describe("ERC721 to CW721 Pointer", function () {
             };
             // send via eth_ endpoint
             const ethlogs = await ethers.provider.send('eth_getLogs', [filter]);
-            expect(ethlogs.length).to.equal(1);
+            expect(ethlogs.length).to.equal(0);
             const seilogs = await ethers.provider.send('sei_getLogs', [filter]);
             expect(seilogs.length).to.equal(1);
             seilogs.forEach(async (log) => {

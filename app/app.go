@@ -19,7 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
+	common "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -151,6 +152,8 @@ import (
 	evmkeeper "github.com/sei-protocol/sei-chain/x/evm/keeper"
 	"github.com/sei-protocol/sei-chain/x/evm/querier"
 	"github.com/sei-protocol/sei-chain/x/evm/replay"
+	evmtracers "github.com/sei-protocol/sei-chain/x/evm/tracers"
+	seitracing "github.com/sei-protocol/sei-chain/x/evm/tracing"
 	evmtypes "github.com/sei-protocol/sei-chain/x/evm/types"
 	"github.com/sei-protocol/sei-chain/x/mint"
 	mintclient "github.com/sei-protocol/sei-chain/x/mint/client/cli"
@@ -432,6 +435,7 @@ type App struct {
 	evmRPCConfig          evmrpcconfig.Config
 	adminConfig           admin.Config
 	adminServer           *grpc.Server
+	evmTracer             *seitracing.Hooks
 	lightInvarianceConfig LightInvarianceConfig
 
 	genesisImportConfig genesistypes.GenesisImportConfig
@@ -1054,6 +1058,15 @@ func New(
 	app.txPrioritizer = NewSeiTxPrioritizer(&app.EvmKeeper, &app.UpgradeKeeper, &app.ParamsKeeper).GetTxPriorityHint
 	app.SetTxPrioritizer(app.txPrioritizer)
 
+	if app.evmRPCConfig.LiveEVMTracer != "" {
+		chainConfig := evmtypes.DefaultChainConfig().EthereumConfig(app.EvmKeeper.ChainID(app.GetCheckCtx()))
+		evmTracer, err := evmtracers.NewBlockchainTracer(evmtracers.GlobalLiveTracerRegistry, app.evmRPCConfig.LiveEVMTracer, chainConfig)
+		if err != nil {
+			panic(fmt.Sprintf("error creating EVM tracer due to %s", err))
+		}
+		app.evmTracer = evmTracer
+	}
+
 	return app
 }
 
@@ -1527,11 +1540,20 @@ func (app *App) ExecuteTxsConcurrently(ctx sdk.Context, txs [][]byte, typedTxs [
 }
 
 func (app *App) GetDeliverTxEntry(ctx sdk.Context, txIndex int, bz []byte, tx sdk.Tx) (res *sdk.DeliverTxEntry) {
+	var txTracer sdk.TxTracer
+	if app.evmTracer != nil {
+		txTracer = app.evmTracer
+		if app.evmTracer.GetTxTracer != nil {
+			txTracer = app.evmTracer.GetTxTracer(txIndex)
+		}
+	}
+
 	res = &sdk.DeliverTxEntry{
 		Request:       abci.RequestDeliverTxV2{Tx: bz},
 		SdkTx:         tx,
 		Checksum:      sha256.Sum256(bz),
 		AbsoluteIndex: txIndex,
+		TxTracer:      txTracer,
 	}
 	return
 }
@@ -1746,6 +1768,10 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 
 	ctx = ctx.WithIsOCCEnabled(app.OccEnabled())
 
+	if app.evmTracer != nil {
+		ctx = evmtracers.SetCtxBlockchainTracer(ctx, app.evmTracer)
+	}
+
 	blockSpanCtx, blockSpan := app.GetBaseApp().TracingInfo.Start("Block")
 	defer blockSpan.End()
 	blockSpan.SetAttributes(attribute.Int64("height", req.GetHeight()))
@@ -1757,6 +1783,13 @@ func (app *App) ProcessBlock(ctx sdk.Context, txs [][]byte, req BlockProcessRequ
 	evmTxs := make([]*evmtypes.MsgEVMTransaction, len(txs)) // nil for non-EVM txs
 	typedTxs := app.DecodeTransactionsConcurrently(ctx, txs)
 
+	if app.evmTracer != nil {
+		header := ctx.BlockHeader()
+		app.evmTracer.OnSeiBlockStart(req.GetHash(), uint64(header.Size()), TmBlockHeaderToEVM(ctx, header, &app.EvmKeeper))
+		defer func() {
+			app.evmTracer.OnSeiBlockEnd(err)
+		}()
+	}
 	for i := range txs {
 		evmTxs[i] = app.GetEVMMsg(typedTxs[i])
 	}
@@ -2787,4 +2820,53 @@ func (app *App) validateGigaEVMTx(
 func init() {
 	// override max wasm size to 2MB
 	wasmtypes.MaxWasmSize = 2 * 1024 * 1024
+}
+
+func TmBlockHeaderToEVM(
+	ctx sdk.Context,
+	block tmproto.Header,
+	k *evmkeeper.Keeper,
+) (header *ethtypes.Header) {
+	noGasBillingCtx := ctx.WithGasMeter(storetypes.NewNoConsumptionInfiniteGasMeter())
+
+	number := big.NewInt(block.Height)
+	lastHash := common.BytesToHash(block.LastBlockId.Hash)
+	appHash := common.BytesToHash(block.AppHash)
+	txHash := common.BytesToHash(block.DataHash)
+	resultHash := common.BytesToHash(block.LastResultsHash)
+	miner := common.BytesToAddress(block.ProposerAddress)
+	gasLimit, gasWanted := uint64(0), uint64(0)
+
+	zeroExcessBlobGas := uint64(0)
+	baseFee := k.GetNextBaseFeePerGas(noGasBillingCtx).TruncateInt().BigInt()
+
+	if noGasBillingCtx.ChainID() == "pacific-1" && noGasBillingCtx.BlockHeight() < k.UpgradeKeeper().GetDoneHeight(noGasBillingCtx.WithGasMeter(sdk.NewInfiniteGasMeter(1, 1)), "6.2.0") {
+		baseFee = nil
+	}
+
+	header = &ethtypes.Header{
+		Number:           number,
+		ParentHash:       lastHash,
+		Nonce:            ethtypes.BlockNonce{},   // inapplicable to Sei
+		MixDigest:        common.Hash{},           // inapplicable to Sei
+		UncleHash:        ethtypes.EmptyUncleHash, // inapplicable to Sei
+		Bloom:            k.GetBlockBloom(noGasBillingCtx),
+		Root:             appHash,
+		Coinbase:         miner,
+		Difficulty:       big.NewInt(0),   // inapplicable to Sei
+		Extra:            hexutil.Bytes{}, // inapplicable to Sei
+		GasLimit:         gasLimit,
+		GasUsed:          gasWanted,
+		Time:             uint64(block.Time.Unix()),
+		TxHash:           txHash,
+		ReceiptHash:      resultHash,
+		BaseFee:          baseFee,
+		ExcessBlobGas:    &zeroExcessBlobGas,
+		WithdrawalsHash:  nil, // inapplicable to Sei
+		BlobGasUsed:      nil, // inapplicable to Sei
+		ParentBeaconRoot: nil, // inapplicable to Sei
+		RequestsHash:     nil, // inapplicable to Sei
+	}
+
+	return
 }
