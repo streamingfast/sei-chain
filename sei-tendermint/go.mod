@@ -1,6 +1,6 @@
 module github.com/tendermint/tendermint
 
-go 1.24.5
+go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.1.0
@@ -30,9 +30,9 @@ require (
 	github.com/spf13/viper v1.12.0
 	github.com/stretchr/testify v1.7.2
 	github.com/tendermint/tm-db v0.6.6
-	golang.org/x/crypto v0.31.0
-	golang.org/x/net v0.25.0
-	golang.org/x/sync v0.10.0
+	golang.org/x/crypto v0.52.0
+	golang.org/x/net v0.54.0
+	golang.org/x/sync v0.20.0
 	google.golang.org/grpc v1.46.2
 	pgregory.net/rapid v0.4.7
 )
@@ -46,7 +46,6 @@ require (
 	github.com/golangci/golangci-lint v1.46.0
 	github.com/google/go-cmp v0.6.0
 	github.com/vektra/mockery/v2 v2.14.0
-	gotest.tools v2.2.0+incompatible
 )
 
 require (
@@ -64,7 +63,6 @@ require (
 	github.com/alexkohler/prealloc v1.0.0 // indirect
 	github.com/ashanbrown/forbidigo v1.3.0 // indirect
 	github.com/ashanbrown/makezero v1.1.1 // indirect
-	github.com/benbjohnson/immutable v0.4.3 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bkielbasa/cyclop v1.2.0 // indirect
 	github.com/blizzy78/varnamelen v0.8.0 // indirect
@@ -124,7 +122,6 @@ require (
 	github.com/golangci/misspell v0.3.5 // indirect
 	github.com/golangci/revgrep v0.0.0-20210930125155-c22e5001d4f2 // indirect
 	github.com/golangci/unconvert v0.0.0-20180507085042-28b1c447d1f4 // indirect
-	github.com/google/btree v1.0.0 // indirect
 	github.com/gordonklaus/ineffassign v0.0.0-20210914165742-4cc7213b9bc8 // indirect
 	github.com/gostaticanalysis/analysisutil v0.7.1 // indirect
 	github.com/gostaticanalysis/comment v1.4.2 // indirect
@@ -227,10 +224,12 @@ require (
 	go.uber.org/zap v1.21.0 // indirect
 	golang.org/x/exp v0.0.0-20220518171630-0b5c67f07fdf // indirect
 	golang.org/x/exp/typeparams v0.0.0-20220218215828-6cf2b201936e // indirect
-	golang.org/x/mod v0.17.0 // indirect
-	golang.org/x/term v0.27.0 // indirect
-	golang.org/x/text v0.21.0 // indirect
-	golang.org/x/tools v0.21.1-0.20240508182429-e35e4ccd0d2d // indirect
+	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/term v0.43.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/tools v0.44.0 // indirect
+	golang.org/x/tools/go/expect v0.1.1-deprecated // indirect
+	golang.org/x/tools/go/packages/packagestest v0.1.1-deprecated // indirect
 	google.golang.org/genproto v0.0.0-20220519153652-3a47de7e79bd // indirect
 	gopkg.in/ini.v1 v1.66.6 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
@@ -243,8 +242,10 @@ require (
 )
 
 require (
+	github.com/benbjohnson/immutable v0.4.3
 	github.com/btcsuite/btcd/btcec/v2 v2.1.3
 	github.com/creachadair/tomledit v0.0.22
+	github.com/google/btree v1.0.0
 	github.com/grafana/pyroscope-go/godeltaprof v0.1.8
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/errors v0.9.1
@@ -255,7 +256,7 @@ require (
 	go.opentelemetry.io/otel v1.9.0
 	go.opentelemetry.io/otel/sdk v1.9.0
 	go.opentelemetry.io/otel/trace v1.9.0
-	golang.org/x/sys v0.28.0
+	golang.org/x/sys v0.45.0
 	golang.org/x/time v0.13.0
 	google.golang.org/protobuf v1.28.0
 )
